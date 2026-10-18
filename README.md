@@ -60,13 +60,10 @@ Kizu's goal is simple: add useful Twitch enhancements, privacy/cleanup controls,
 - One master **3rd party emotes** toggle.
 - Animated third-party emotes.
 - Third-party **emote picker**.
-- Third-party **autocomplete** in Twitch's chat input.
-- Tap previews for third-party emotes using Twitch's native emote-card sheet.
+- Third-party **autocomplete**.
 - **Zero-width / overlay emotes**.
 - Emote caching and image loading.
 - Twitch 31.3.1-specific emote URL compatibility.
-
-Kizu's third-party picker is kept separate from Twitch's native emote picker. Twitch's native picker and its native three-button menu are not replaced.
 
 ### Chat
 
@@ -81,6 +78,40 @@ Kizu's third-party picker is kept separate from Twitch's native emote picker. Tw
 - Optional mention sound.
 - Configurable mention-sound cooldown.
 
+### Hide Stream Extensions
+
+- Added an option to hide Twitch stream extensions, including supported extension icons, panels, and video overlays.
+
+- Designed to provide a cleaner viewing experience.
+
+### Third-Party Emote Preview
+
+- Added tap-to-preview support for supported 7TV, BetterTTV (BTTV), and FrankerFaceZ (FFZ) emotes in chat.
+
+- Opens Twitch's native emote-card interface when supported.
+
+### Danmaku Comments
+
+- Added Danmaku-style scrolling comments over the video player.
+
+- Provides an alternative way to view chat activity while watching streams.
+
+### Horizontal Emote Autocomplete
+
+- Added a custom horizontal autocomplete suggestion strip for Twitch chat.
+
+- Supports Twitch-native emotes and third-party emotes from 7TV, BTTV, and FFZ.
+
+- Supports searches using bare emote names and colon-prefixed terms.
+
+- Combines global and channel-specific third-party emote catalogs.
+
+- Prioritizes Twitch-native emotes when names overlap.
+
+- Uses locally available native emote data to provide suggestions without waiting for third-party catalog requests.
+
+- Updates suggestions as provider catalogs load.
+
 ### Privacy
 
 - Disable **Comscore** measurement.
@@ -92,9 +123,9 @@ Kizu combines original work with code and implementation ideas adapted from othe
 
 | Feature / area | Source |
 |---|---|
-| Twitch patch architecture, settings, login/notification compatibility, ad/promotion handling, shared utilities | [UYU](https://github.com/bakwudo/uyu) |
+| Twitch patch architecture, settings, login/notification compatibility, ad/promotion handling, shared utilities, Niconico-style Danmaku (scrolling chat comments) implementation | [UYU](https://github.com/bakwudo/uyu) |
 | 7TV / BTTV / FFZ emotes, emote loading/caching, third-party emote handling | [Hooman's Morphe Patches](https://github.com/arandomhooman/hoomans-morphe-patches) |
-| Channel Points auto-claim architecture/reference | [PurpleTV ReVive](https://github.com/alienware377/purpletv-revive) |
+| Channel Points auto-claim architecture/reference, Emote Autocomplete | [PurpleTV ReVive](https://github.com/alienware377/purpletv-revive) |
 | Twitch patching framework and build tooling | [Morphe](https://github.com/MorpheApp), [Morphe Patches](https://github.com/MorpheApp/morphe-patches), [Morphe Patches Template](https://github.com/MorpheApp/morphe-patches-template), [Morphe Patcher](https://github.com/MorpheApp/morphe-patcher), [Morphe Documentation](https://github.com/MorpheApp/morphe-documentation) |
 | Additional patching/reference lineage | [ReVanced](https://github.com/ReVanced/revanced-patches), [morphe-androidtv-patches](https://github.com/ajstrick81/morphe-androidtv-patches), [bttv-android](https://github.com/bttv-android/bttv) |
 
@@ -164,4 +195,3 @@ Experimental features stay out of stable releases until they are verified.
 This repository is a combined/derivative project. Upstream projects are credited above, and their respective licenses and attribution requirements continue to apply to the reused components.
 
 Kizu does not claim ownership of Twitch or any upstream project, service, or framework listed in this README.
-
