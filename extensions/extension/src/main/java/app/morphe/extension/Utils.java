@@ -20,6 +20,7 @@ import android.view.ViewGroup;
 
 import java.util.WeakHashMap;
 
+import app.morphe.extension.appearance.HypeTrainHider;
 import app.morphe.extension.twitch.emotes.EmoteSupport;
 import app.morphe.extension.channelpoints.ChannelPoints;
 import io.github.bakwudo.uyu.extension.settings.Settings;
@@ -29,6 +30,8 @@ public final class Utils {
     private static final String TAG = "kizu";
     private static final long CLAIM_POLL_INTERVAL_MS = 3_000L;
     private static final int STATUS_DURATION_MS = 2_000;
+    /** チャンネルポイント自動取得時のポップアップ。true にすると表示する */
+    private static final boolean SHOW_CLAIM_STATUS = false;
     private static final WeakHashMap<Activity, TextView> STATUS_MESSAGES = new WeakHashMap<>();
 
     @SuppressLint("StaticFieldLeak")
@@ -68,12 +71,14 @@ public final class Utils {
                     currentActivity = activity;
                     try { DefaultFollowing.onActivityStarted(activity); } catch (Throwable ignored) {}
                     try { LandscapeChatPatch.onActivityStarted(activity); } catch (Throwable ignored) {}
+                    try { HypeTrainHider.onActivityStarted(activity); } catch (Throwable ignored) {}
                 }
 
                 @Override public void onActivityResumed(Activity activity) {
                     currentActivity = activity;
                     try { DefaultFollowing.onActivityStarted(activity); } catch (Throwable ignored) {}
                     try { LandscapeChatPatch.onActivityStarted(activity); } catch (Throwable ignored) {}
+                    try { HypeTrainHider.onActivityStarted(activity); } catch (Throwable ignored) {}
                 }
 
                 @Override public void onActivityPaused(Activity activity) {}
@@ -226,6 +231,11 @@ public final class Utils {
     }
 
     public static void showClaimStatus(final String message) {
+        // ポップアップは出さず、ログにだけ残す
+        if (!SHOW_CLAIM_STATUS) {
+            Log.d(TAG, "claim status (hidden): " + message);
+            return;
+        }
         final Activity activity = currentActivity;
         if (activity == null || activity.isFinishing() || activity.isDestroyed()) return;
         MAIN.post(new Runnable() {
