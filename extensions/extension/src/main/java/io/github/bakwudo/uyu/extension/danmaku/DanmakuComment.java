@@ -22,6 +22,8 @@ public final class DanmakuComment {
     int row;
     /** Time on the view's clock when the comment entered at the right edge. */
     long start;
+    /** Time on the view's clock when the comment started waiting for a free row. */
+    long queuedAt;
 
     public DanmakuComment(Object[] parts) {
         this.parts = parts;
