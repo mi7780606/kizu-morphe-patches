@@ -10,9 +10,9 @@ import android.graphics.RectF;
 import android.os.SystemClock;
 import android.view.View;
 
+import java.util.ArrayDeque;
 import java.util.ArrayList;
 import java.util.Iterator;
-import java.util.Random;
 
 import io.github.bakwudo.uyu.extension.settings.Setting;
 
@@ -20,17 +20,23 @@ import io.github.bakwudo.uyu.extension.settings.Setting;
  * Draws danmaku comments scrolling from right to left, Niconico style.
  * <ul>
  *     <li>Every comment takes the same time to cross, so longer comments move faster.</li>
- *     <li>A comment takes the first row, from the top, where it does not catch up with the
- *     comments already there. If there is none, it goes on a random row.</li>
+ *     <li>A comment takes the first row, from the top, where it does not touch or catch up
+ *     with the comments already there. Comments never overlap.</li>
+ *     <li>If no row is free, or the maximum number is shown, the comment waits until one is.
+ *     Comments that wait longer than MAX_WAIT_MS are not shown as danmaku.</li>
  *     <li>While paused, comments stop and new ones are dropped.</li>
  * </ul>
  * Must be used on the main thread.
  */
 public final class DanmakuView extends View {
     private static final String SETTING_PREFIX = "danmaku_";
+    /** 行が空くのを待つ最大時間。超えたものは弾幕にだけ出さない（チャット欄には出る） */
+    private static final long MAX_WAIT_MS = 3000;
+    /** 待機できる最大件数。超えたら古いものから弾幕に出さない */
+    private static final int MAX_WAITING = 60;
 
     private final ArrayList<DanmakuComment> comments = new ArrayList<>();
-    private final Random random = new Random();
+    private final ArrayDeque<DanmakuComment> waiting = new ArrayDeque<>();
     private final Paint fill = new Paint(Paint.ANTI_ALIAS_FLAG);
     private final Paint stroke = new Paint(Paint.ANTI_ALIAS_FLAG);
     private final Paint imagePaint = new Paint(Paint.FILTER_BITMAP_FLAG);
@@ -85,18 +91,18 @@ public final class DanmakuView extends View {
     }
 
     /**
-     * Starts a comment at the right edge. Dropped while paused, before the view is laid out, or
-     * when the maximum number of comments is already shown.
+     * Queues a comment. It starts at the right edge as soon as a row is free.
+     * Dropped while paused or before the view is laid out.
      */
     public void addComment(DanmakuComment comment) {
         if (paused || getWidth() == 0 || getHeight() == 0) return;
-        if (comments.size() >= style.maxComments) return;
 
         tick();
         layoutComment(comment);
-        comment.row = pickRow(comment.width);
-        comment.start = clock;
-        comments.add(comment);
+        comment.queuedAt = clock;
+        waiting.add(comment);
+        while (waiting.size() > MAX_WAITING) waiting.pollFirst();
+        placeWaiting();
         postInvalidateOnAnimation();
     }
 
@@ -124,6 +130,7 @@ public final class DanmakuView extends View {
 
     public void clear() {
         comments.clear();
+        waiting.clear();
         invalidate();
     }
 
@@ -160,6 +167,7 @@ public final class DanmakuView extends View {
         stroke.setColor(style.outlineColor);
 
         for (DanmakuComment comment : comments) layoutComment(comment);
+        for (DanmakuComment comment : waiting) layoutComment(comment);
         invalidate();
     }
 
@@ -174,11 +182,31 @@ public final class DanmakuView extends View {
         comment.width = width;
     }
 
-    private int pickRow(float width) {
+    /** Starts waiting comments that now fit on a row without overlapping. */
+    private void placeWaiting() {
+        Iterator<DanmakuComment> iterator = waiting.iterator();
+        while (iterator.hasNext()) {
+            DanmakuComment next = iterator.next();
+            if (clock - next.queuedAt > MAX_WAIT_MS) {
+                iterator.remove();
+                continue;
+            }
+            if (comments.size() >= style.maxComments) return;
+            int row = findRow(next.width);
+            if (row < 0) continue; // この幅は今は入らない。短い後続を試す
+            iterator.remove();
+            next.row = row;
+            next.start = clock;
+            comments.add(next);
+        }
+    }
+
+    /** @return The first row, from the top, the comment fits on now, or -1 if none. */
+    private int findRow(float width) {
         for (int row = 0; row < style.usableRows; row++) {
             if (fitsInRow(row, width)) return row;
         }
-        return random.nextInt(style.usableRows);
+        return -1;
     }
 
     /**
@@ -210,17 +238,17 @@ public final class DanmakuView extends View {
         super.onDraw(canvas);
         tick();
 
+        Iterator<DanmakuComment> finished = comments.iterator();
+        while (finished.hasNext()) {
+            DanmakuComment comment = finished.next();
+            if ((clock - comment.start) / (float) style.durationMs >= 1) finished.remove();
+        }
+        if (!paused) placeWaiting();
+
         float viewWidth = getWidth();
         boolean drawOutline = strokeWidth > 0 && Color.alpha(style.outlineColor) > 0;
-        Iterator<DanmakuComment> iterator = comments.iterator();
-        while (iterator.hasNext()) {
-            DanmakuComment comment = iterator.next();
+        for (DanmakuComment comment : comments) {
             float progress = (clock - comment.start) / (float) style.durationMs;
-            if (progress >= 1) {
-                iterator.remove();
-                continue;
-            }
-
             float x = viewWidth - progress * (viewWidth + comment.width) + strokeWidth / 2;
             float top = comment.row * lineHeight;
             for (int i = 0; i < comment.parts.length; i++) {
@@ -238,7 +266,7 @@ public final class DanmakuView extends View {
             }
         }
 
-        if (!comments.isEmpty() && !paused) postInvalidateOnAnimation();
+        if ((!comments.isEmpty() || !waiting.isEmpty()) && !paused) postInvalidateOnAnimation();
     }
 
     private void drawEmote(Canvas canvas, DanmakuComment.Emote emote, float left, float top) {
