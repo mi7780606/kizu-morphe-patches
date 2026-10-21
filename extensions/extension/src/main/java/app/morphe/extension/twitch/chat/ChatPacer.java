@@ -10,12 +10,14 @@ import java.util.List;
 import java.util.WeakHashMap;
 
 /**
- * チャット欄アダプタ c35.w(List) に届いたコメントを、0.3秒以内に1件ずつ流し直す。
+ * チャット欄アダプタ c35.w(List) に届いたコメントを、一定のテンポで1件ずつ流し直す。
  * 何か失敗したら元の動作に戻る。
  */
 @SuppressWarnings("unused")
 public final class ChatPacer {
     private static final String TAG = "KizuChatPacer";
+    /** チャット欄の最大遅延（ミリ秒） */
+    private static final long CHAT_MAX_DELAY_MS = 1000;
     /** これ以上の件数は過去ログ読み込みとみなして一括表示 */
     private static final int HISTORY_BATCH = 30;
 
@@ -40,19 +42,15 @@ public final class ChatPacer {
             Pacer<Object> pacer = PACERS.get(adapter);
             if (list.size() >= HISTORY_BATCH) {
                 if (pacer != null) pacer.flush(); // 順番を守るため先に溜まり分を出す
-                return false;
+                return false; // 過去ログは一括表示
             }
             if (pacer == null) {
                 WeakReference<Object> ref = new WeakReference<>(adapter);
                 pacer = new Pacer<>(items -> {
                     Object a = ref.get();
                     if (a != null) deliver(a, items);
-                });
+                }, CHAT_MAX_DELAY_MS);
                 PACERS.put(adapter, pacer);
-            }
-            if (list.size() == 1 && pacer.isIdle()) {
-                pacer.noteArrival();
-                return false; // 1件だけで待ちもない → 遅延ゼロで即表示
             }
             pacer.submit(new ArrayList<Object>(list));
             return true;
@@ -65,6 +63,7 @@ public final class ChatPacer {
     private static void deliver(Object adapter, List<Object> items) {
         Method m = resolve(adapter);
         if (m == null) return;
+        ChatSmoothScroll.markDelivered();
         bypass = true;
         try {
             m.invoke(adapter, new ArrayList<>(items));
