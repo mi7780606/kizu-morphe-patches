@@ -34,6 +34,7 @@ public final class ChatSmoothScroll {
 
     /** 注入先: チャット画面 hu6 のコンストラクタの最後。引数はチャットの RecyclerView */
     public static void attach(View view) {
+        try { ChatHistory.attach(view); } catch (Throwable ignored) { }
         try {
             if (!(view instanceof ViewGroup) || ATTACHED.containsKey(view)) return;
             ATTACHED.put(view, Boolean.TRUE);
