@@ -35,11 +35,12 @@ import java.util.WeakHashMap;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
+import io.github.bakwudo.uyu.extension.settings.KizuSettings;
+
 public final class ChatHistory {
     private static final String TAG = "KizuChatHistory";
 
     public static final boolean ENABLED = true;
-    private static final boolean DEBUG = true;
     private static final int MAX_PER_USER = 50;
     private static final int MAX_USERS = 1500;
     private static final int MAX_TOTAL = 15000;
@@ -77,6 +78,7 @@ public final class ChatHistory {
                 @Override protected boolean removeEldestEntry(Map.Entry<Integer, Boolean> e) { return size() > 800; }
             };
     private static final Set<View> LISTS = Collections.newSetFromMap(new WeakHashMap<View, Boolean>());
+    private static final Set<View> TAPPABLE = Collections.newSetFromMap(new WeakHashMap<View, Boolean>());
     private static boolean broken;
     private static boolean announced;
     private static int toasts;
@@ -88,6 +90,10 @@ public final class ChatHistory {
 
     private ChatHistory() {}
 
+    private static boolean on() {
+        try { return KizuSettings.CHAT_HISTORY.get(); } catch (Throwable t) { return true; }
+    }
+
     public static void attach(View list) {
         if (!ENABLED || broken || !(list instanceof ViewGroup)) return;
         try {
@@ -96,7 +102,10 @@ public final class ChatHistory {
             Recorder r = new Recorder((ViewGroup) list);
             list.addOnAttachStateChangeListener(r);
             if (list.isAttachedToWindow()) r.onViewAttachedToWindow(list);
-            if (!announced) { announced = true; debug(list.getContext(), "過去コメント: 記録を開始しました"); }
+            if (!announced && on()) {
+                announced = true;
+                debug(list.getContext(), "過去コメント: 記録を開始しました");
+            }
         } catch (Throwable t) { fail("attach failed", t); }
     }
 
@@ -114,7 +123,7 @@ public final class ChatHistory {
             vto = null;
         }
         @Override public boolean onPreDraw() {
-            if (broken) return true;
+            if (broken || !on()) return true;
             ViewGroup list = ref.get();
             if (list == null) return true;
             try {
@@ -132,20 +141,15 @@ public final class ChatHistory {
     private static boolean hasColon(CharSequence t) {
         return t != null && (TextUtils.indexOf(t, ':') > 0 || TextUtils.indexOf(t, '：') > 0);
     }
-
     private static TextView rowText(View v, int depth) {
         if (v == null || v.getVisibility() != View.VISIBLE) return null;
         if (v instanceof TextView) return hasColon(((TextView) v).getText()) ? (TextView) v : null;
         if (v instanceof ViewGroup && depth < 4) {
             ViewGroup g = (ViewGroup) v;
-            for (int i = 0; i < g.getChildCount(); i++) {
-                TextView tv = rowText(g.getChildAt(i), depth + 1);
-                if (tv != null) return tv;
-            }
+            for (int i = 0; i < g.getChildCount(); i++) { TextView tv = rowText(g.getChildAt(i), depth+1); if (tv!=null) return tv; }
         }
         return null;
     }
-
     private static void record(CharSequence cs) {
         if (cs == null || cs.length() == 0 || cs.length() > 2000) return;
         int id = System.identityHashCode(cs);
@@ -172,15 +176,9 @@ public final class ChatHistory {
             it.remove();
         }
     }
-
-    private static boolean isSpace(char c) {
-        return Character.isWhitespace(c) || c == '\u00A0' || c == '\u3000';
-    }
+    private static boolean isSpace(char c) { return Character.isWhitespace(c) || c == '\u00A0' || c == '\u3000'; }
     private static int skip(String s, int i) {
-        while (i < s.length()) {
-            char c = s.charAt(i);
-            if (c == '\uFFFC' || c == '\u200B' || isSpace(c)) i++; else break;
-        }
+        while (i < s.length()) { char c = s.charAt(i); if (c == '\uFFFC' || c == '\u200B' || isSpace(c)) i++; else break; }
         return i;
     }
     private static String clean(String s) {
@@ -190,7 +188,6 @@ public final class ChatHistory {
         while (b > a && isSpace(s.charAt(b - 1))) b--;
         return s.substring(a, b);
     }
-
     private static Parsed parse(String s) {
         int start = skip(s, 0);
         Matcher m = TIME_PREFIX.matcher(s);
@@ -212,7 +209,6 @@ public final class ChatHistory {
         else return null;
         return new Parsed(key, name, body, start, colon);
     }
-
     private static View.OnTouchListener currentTouchListener(View v) {
         if (reflectFailed) return null;
         try {
@@ -223,37 +219,30 @@ public final class ChatHistory {
             return (View.OnTouchListener) touchListenerField.get(info);
         } catch (Throwable t) { reflectFailed = true; return null; }
     }
-
     private static void install(TextView tv) {
         View.OnTouchListener cur = currentTouchListener(tv);
         if (cur instanceof NameTap) return;
+        if (reflectFailed && !TAPPABLE.add(tv)) return;
         if (slop < 0) slop = ViewConfiguration.get(tv.getContext()).getScaledTouchSlop();
         tv.setOnTouchListener(new NameTap(cur));
     }
-
     private static final class NameTap implements View.OnTouchListener {
         final View.OnTouchListener prev;
         float downX, downY; long downTime; Hit candidate;
         NameTap(View.OnTouchListener prev) { this.prev = prev; }
-
         @Override public boolean onTouch(View v, MotionEvent e) {
-            try {
-                if (!broken && v instanceof TextView && handle((TextView) v, e)) return true;
-            } catch (Throwable t) { candidate = null; fail("touch failed", t); }
+            try { if (!broken && on() && v instanceof TextView && handle((TextView) v, e)) return true; }
+            catch (Throwable t) { candidate = null; fail("touch failed", t); }
             return prev != null && prev.onTouch(v, e);
         }
-        private boolean moved(MotionEvent e) {
-            return Math.abs(e.getX() - downX) > slop || Math.abs(e.getY() - downY) > slop;
-        }
+        private boolean moved(MotionEvent e) { return Math.abs(e.getX()-downX) > slop || Math.abs(e.getY()-downY) > slop; }
         private boolean handle(TextView tv, MotionEvent e) {
             switch (e.getActionMasked()) {
                 case MotionEvent.ACTION_DOWN:
                     downX = e.getX(); downY = e.getY(); downTime = e.getEventTime();
-                    candidate = hitName(tv, downX, downY);
-                    return false;
+                    candidate = hitName(tv, downX, downY); return false;
                 case MotionEvent.ACTION_MOVE:
-                    if (candidate != null && moved(e)) candidate = null;
-                    return false;
+                    if (candidate != null && moved(e)) candidate = null; return false;
                 case MotionEvent.ACTION_UP: {
                     Hit h = candidate; candidate = null;
                     if (h == null || moved(e) || e.getEventTime() - downTime > TAP_TIMEOUT_MS) return false;
@@ -268,10 +257,8 @@ public final class ChatHistory {
             }
         }
     }
-
     private static Hit hitName(TextView tv, float x, float y) {
-        Layout layout = tv.getLayout();
-        CharSequence text = tv.getText();
+        Layout layout = tv.getLayout(); CharSequence text = tv.getText();
         if (layout == null || text == null) return null;
         Parsed p = parse(text.toString());
         if (p == null) {
@@ -292,7 +279,6 @@ public final class ChatHistory {
         }
         return new Hit(p, span);
     }
-
     private static void showHistory(Activity a, Hit h, TextView tv) {
         try {
             if (a.isFinishing()) return;
@@ -313,29 +299,32 @@ public final class ChatHistory {
             b.setView(sv);
             b.setNegativeButton("閉じる", null);
             if (h.span != null) {
-                b.setPositiveButton("プロフィール", (dialog, which) -> {
-                    try { h.span.onClick(tv); } catch (Throwable t) { Log.e(TAG, "profile failed", t); }
-                });
+                b.setPositiveButton("プロフィール", (dialog, which) -> { try { h.span.onClick(tv); } catch (Throwable t) { Log.e(TAG, "profile failed", t); } });
             }
             b.show();
         } catch (Throwable t) { Log.e(TAG, "show failed", t); debug(a, "過去コメント: 一覧を表示できませんでした"); }
     }
-
     private static TextView line(Context c, float d, String s) {
-        TextView t = new TextView(c); t.setText(s); t.setTextColor(0xFFEFEFF1);
+        TextView t = new TextView(c);
+        t.setText(s); t.setTextColor(0xFFEFEFF1);
         t.setTextSize(TypedValue.COMPLEX_UNIT_SP, 14);
-        t.setPadding(0,(int)(4*d),0,(int)(4*d)); t.setTextIsSelectable(true); return t;
+        t.setPadding(0, (int)(4*d), 0, (int)(4*d));
+        t.setTextIsSelectable(true);
+        return t;
     }
     private static Activity findActivity(Context c) {
         while (c instanceof ContextWrapper) { if (c instanceof Activity) return (Activity) c; c = ((ContextWrapper) c).getBaseContext(); }
         return null;
     }
     private static void debug(Context c, String msg) {
-        if (!DEBUG || c == null || toasts >= 6) return; toasts++;
+        if (c == null || toasts >= 6) return;
+        try { if (!KizuSettings.DEBUG_MESSAGES.get()) return; } catch (Throwable ignored) {}
+        toasts++;
         try { Toast.makeText(c.getApplicationContext(), "Kizu " + msg, Toast.LENGTH_SHORT).show(); } catch (Throwable ignored) {}
     }
     private static void fail(String msg, Throwable t) {
         if (!broken) debug(lastContext.get(), "過去コメント: エラーで停止しました（" + msg + "）");
-        broken = true; Log.e(TAG, msg, t);
+        broken = true;
+        Log.e(TAG, msg, t);
     }
 }
