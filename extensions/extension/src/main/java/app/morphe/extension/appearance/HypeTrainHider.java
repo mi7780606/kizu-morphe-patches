@@ -15,16 +15,18 @@ import java.util.Locale;
 import java.util.Map;
 import java.util.WeakHashMap;
 
+import app.morphe.extension.twitch.chat.ChatHistoryStarter;
+import io.github.bakwudo.uyu.extension.settings.KizuSettings;
+
 public final class HypeTrainHider {
     private static final String TAG = "KizuHypeTrain";
 
-    // ===== 調整用 =====
     public static final boolean ENABLED = true;
     private static final String[] ID_KEYWORDS = {"hype_train", "hypetrain"};
     private static final String[] TEXT_KEYWORDS = {"ハイプトレイン", "hype train", "hype-train"};
     private static final long SCAN_DELAY_MS = 300;
     private static final int MAX_CLIMB = 15;
-    private static final float MAX_HEIGHT_RATIO = 0.75f; // 画面の75%より大きいものは消さない
+    private static final float MAX_HEIGHT_RATIO = 0.75f;
     private static final String CHAT_LIST = "chat_message_recycler_view";
 
     private static final Map<View, Scanner> SCANNERS = new WeakHashMap<>();
@@ -34,6 +36,11 @@ public final class HypeTrainHider {
     private HypeTrainHider() {}
 
     public static void onActivityStarted(Activity activity) {
+        try {
+            ChatHistoryStarter.onActivityStarted(activity);
+        } catch (Throwable t) {
+            Log.e(TAG, "chat history start failed", t);
+        }
         if (!ENABLED || activity == null || activity.getWindow() == null) return;
         try {
             View decor = activity.getWindow().getDecorView();
@@ -70,6 +77,7 @@ public final class HypeTrainHider {
             View root = rootRef.get();
             if (root == null) return;
             try {
+                if (!KizuSettings.HIDE_HYPE_TRAIN.get()) return;
                 scan(root, root);
             } catch (Throwable t) {
                 Log.e(TAG, "scan failed", t);
@@ -81,17 +89,14 @@ public final class HypeTrainHider {
         if (v.getVisibility() == View.GONE) return;
         String name = idName(v);
         if (name != null) {
-            if (name.equals(CHAT_LIST)) return; // チャット本文は見ない
+            if (name.equals(CHAT_LIST)) return;
             String lower = name.toLowerCase(Locale.ROOT);
             for (String k : ID_KEYWORDS) {
-                if (lower.contains(k)) {
-                    hide(v, "id=" + name);
-                    return;
-                }
+                if (lower.contains(k)) { hide(v, "id=" + name); return; }
             }
         }
         if (v instanceof TextView) {
-            if (v instanceof EditText) return; // 入力欄は対象外
+            if (v instanceof EditText) return;
             CharSequence text = ((TextView) v).getText();
             if (text != null && containsKeyword(text.toString())) hideCard(v, root);
             return;
@@ -111,7 +116,6 @@ public final class HypeTrainHider {
         return false;
     }
 
-    /** 文字から親をたどり、「highlight」名の枠か、チャット欄と並んでいる枠を消す */
     private static void hideCard(View textView, View root) {
         View cur = textView;
         for (int i = 0; i < MAX_CLIMB; i++) {
@@ -120,12 +124,10 @@ public final class HypeTrainHider {
             ViewGroup parent = (ViewGroup) p;
             String name = idName(cur);
             if (cur != textView && name != null && name.toLowerCase(Locale.ROOT).contains("highlight")) {
-                hideSafely(cur, root, "highlight=" + name);
-                return;
+                hideSafely(cur, root, "highlight=" + name); return;
             }
             if (chatListId != 0 && chatListId != -1 && parent.findViewById(chatListId) != null) {
-                hideSafely(cur, root, "chat sibling");
-                return;
+                hideSafely(cur, root, "chat sibling"); return;
             }
             cur = parent;
         }
@@ -134,8 +136,7 @@ public final class HypeTrainHider {
 
     private static void hideSafely(View v, View root, String reason) {
         if (root.getHeight() > 0 && v.getHeight() > root.getHeight() * MAX_HEIGHT_RATIO) {
-            Log.i(TAG, "too big, skipped: " + chain(v));
-            return;
+            Log.i(TAG, "too big, skipped: " + chain(v)); return;
         }
         hide(v, reason);
     }
@@ -152,10 +153,7 @@ public final class HypeTrainHider {
         String cached = ID_NAMES.get(id);
         if (cached != null) return cached.isEmpty() ? null : cached;
         String name = "";
-        try {
-            name = v.getResources().getResourceEntryName(id);
-        } catch (Throwable ignored) {
-        }
+        try { name = v.getResources().getResourceEntryName(id); } catch (Throwable ignored) {}
         ID_NAMES.put(id, name);
         return name.isEmpty() ? null : name;
     }
