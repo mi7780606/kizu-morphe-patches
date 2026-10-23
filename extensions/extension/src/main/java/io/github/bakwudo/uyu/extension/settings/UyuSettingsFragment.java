@@ -20,16 +20,9 @@ import java.util.Locale;
 
 import io.github.bakwudo.uyu.extension.danmaku.DanmakuPreview;
 
-/**
- * An uyu settings screen. Built in code with platform preferences, so it needs no resources
- * added to the app. Only settings of applied patches are shown.
- * <p>
- * The first screen lists the sections, and each section opens as its own screen on top.
- * Screens are shown on top of Twitch's own settings screen, so they have an opaque background,
- * take all touches, and put the toolbar title back when they close.
- */
 @SuppressWarnings("deprecation")
 public class UyuSettingsFragment extends PreferenceFragment {
+    static final String SECTION_KIZU = "kizu";
     static final String SECTION_GENERAL = "general";
     static final String SECTION_APPEARANCE = "appearance";
     static final String SECTION_DANMAKU = "danmaku";
@@ -46,14 +39,10 @@ public class UyuSettingsFragment extends PreferenceFragment {
             "Thin", "Extra light", "Light", "Regular", "Medium", "Semi bold", "Bold", "Extra bold", "Black",
     };
 
-    /** Null for the list of sections. */
     private String section;
     private CharSequence previousTitle;
     private FontPreference fontPreference;
 
-    /**
-     * @param section One of the SECTION constants, or null for the list of sections.
-     */
     static UyuSettingsFragment create(String section) {
         UyuSettingsFragment fragment = new UyuSettingsFragment();
         Bundle arguments = new Bundle();
@@ -74,6 +63,8 @@ public class UyuSettingsFragment extends PreferenceFragment {
 
         if (section == null) {
             addSectionLinks(screen);
+        } else if (section.equals(SECTION_KIZU)) {
+            addKizuSettings(screen);
         } else if (section.equals(SECTION_GENERAL)) {
             addGeneralSettings(screen);
         } else if (section.equals(SECTION_APPEARANCE)) {
@@ -96,11 +87,11 @@ public class UyuSettingsFragment extends PreferenceFragment {
     }
 
     private void addSectionLinks(PreferenceScreen screen) {
+        addSectionLink(screen, SECTION_KIZU, "自分で追加した機能のオン・オフ");
         if (PatchStatus.autoClaimChannelPoints()) {
             addSectionLink(screen, SECTION_GENERAL, "Channel points");
         }
-        addSectionLink(screen, SECTION_APPEARANCE,
-                "Appearance controls, promotions and Go Ad-Free");
+        addSectionLink(screen, SECTION_APPEARANCE, "Appearance controls, promotions and Go Ad-Free");
         if (PatchStatus.danmakuComments()) {
             addSectionLink(screen, SECTION_DANMAKU, "Chat messages scrolling across the video");
         }
@@ -126,7 +117,28 @@ public class UyuSettingsFragment extends PreferenceFragment {
         screen.addPreference(preference);
     }
 
-        private void addGeneralSettings(PreferenceScreen screen) {
+    private void addKizuSettings(PreferenceScreen screen) {
+        addSwitch(screen, KizuSettings.SMOOTH_CHAT, "コメントを1件ずつ流す",
+                "まとめて届いたコメントを1件ずつ表示します。オフでTwitch本来の表示に戻ります。");
+        addSwitch(screen, KizuSettings.SMOOTH_SCROLL, "スクロールを滑らかにする",
+                "新しいコメントが来たときのチャット欄の跳ねを滑らかにします。");
+        addSwitch(screen, KizuSettings.CHAT_HISTORY, "名前タップで過去コメント",
+                "名前をタップするとその人の過去コメントを表示します。オフでTwitch本来のユーザーカードが開きます。");
+        addSwitch(screen, KizuSettings.HIDE_HYPE_TRAIN, "ハイプトレインを非表示",
+                "ハイプトレインのカードを消します。オフにしたときは、配信を開き直すと表示されます。");
+        addSwitch(screen, KizuSettings.HIDE_CLAIM_POPUP, "ポイント獲得の通知を非表示",
+                "チャンネルポイント自動獲得時のメッセージを出しません。自動獲得は続きます。");
+        addSwitch(screen, KizuSettings.DANMAKU_QUICK_SETTINGS, "弾幕の設定ボタン",
+                "プレイヤー右上に弾幕のクイック設定ボタンを表示します。");
+        addSwitch(screen, KizuSettings.DEBUG_MESSAGES, "確認用メッセージ",
+                "過去コメント機能の動作確認用メッセージを表示します。");
+        Preference note = new Preference(screen.getContext());
+        note.setSummary("切り替えはすぐに反映されます。");
+        note.setSelectable(false);
+        screen.addPreference(note);
+    }
+
+    private void addGeneralSettings(PreferenceScreen screen) {
         addSwitch(screen, Settings.HIDE_STORIES, "Hide Stories",
                 "Hide the Stories shelf from Twitch's Following/Home feed.");
         if (PatchStatus.autoClaimChannelPoints()) {
@@ -153,18 +165,15 @@ public class UyuSettingsFragment extends PreferenceFragment {
 
     private void addDanmakuSettings(PreferenceScreen screen) {
         addSwitch(screen, Settings.DANMAKU_ENABLED, "Danmaku comments",
-                "Chat messages scroll across the video on live streams. The button in the "
-                        + "player's top right corner switches this too.");
+                "Chat messages scroll across the video on live streams. The button in the player's top right corner switches this too.");
         addSwitch(screen, Settings.DANMAKU_PORTRAIT, "Show in portrait",
                 "Comments also scroll on the video above chat when the phone is upright.");
         addSwitch(screen, Settings.DANMAKU_MINI_PLAYER, "Show in the mini player",
-                "Comments also scroll in the small player that stays on screen while you "
-                        + "browse Twitch.");
+                "Comments also scroll in the small player that stays on screen while you browse Twitch.");
         addSwitch(screen, Settings.DANMAKU_PICTURE_IN_PICTURE, "Show in picture in picture",
                 "Comments also scroll in the floating window shown over other apps.");
         addSwitch(screen, Settings.DANMAKU_HIDE_LANDSCAPE_CHAT, "Hide the chat in landscape",
-                "Hides the chat button in landscape and keeps the landscape chat off, so the "
-                        + "stream fills the screen without a chat overlay.");
+                "Hides the chat button in landscape and keeps the landscape chat off, so the stream fills the screen without a chat overlay.");
         addSlider(screen, Settings.DANMAKU_ROWS, 1, "Rows",
                 value -> value + " rows. The text size follows from this.");
         addSlider(screen, Settings.DANMAKU_AREA, 5, "Area",
@@ -172,13 +181,10 @@ public class UyuSettingsFragment extends PreferenceFragment {
         addSlider(screen, Settings.DANMAKU_DURATION, 500, "Time on screen",
                 value -> String.format(Locale.ROOT, "%.1f seconds", value / 1000f));
         addSlider(screen, Settings.DANMAKU_MAX_COMMENTS, 10, "Maximum comments",
-                value -> "Up to " + value + " comments on screen at once. Later messages are "
-                        + "skipped until there is room.");
-
+                value -> "Up to " + value + " comments on screen at once. Later messages are skipped until there is room.");
         fontPreference = new FontPreference(getActivity(), this, Settings.DANMAKU_FONT);
         fontPreference.setTitle("Font");
         screen.addPreference(fontPreference);
-
         addSlider(screen, Settings.DANMAKU_FONT_WEIGHT, 100, "Font weight",
                 value -> value + " (" + WEIGHT_NAMES[value / 100 - 1] + ")");
         addColor(screen, Settings.DANMAKU_TEXT_COLOR, "Text color");
@@ -191,44 +197,28 @@ public class UyuSettingsFragment extends PreferenceFragment {
 
     private void addAdsSettings(PreferenceScreen screen) {
         addSwitch(screen, Settings.BLOCK_ADS, "Block ads",
-                "Blocks live, VOD and display ads. Ads that are part of the stream itself are "
-                        + "covered with a black screen and muted until they end.");
-
+                "Blocks live, VOD and display ads. Ads that are part of the stream itself are covered with a black screen and muted until they end.");
         Preference proxy = new TextPreference(SettingsUi.preferenceContext(screen.getContext()), Settings.ADS_PROXY_URL,
-                "https://example.com/live/{channel}",
-                "Not set. Ads are blocked on the device only.");
+                "https://example.com/live/{channel}", "Not set. Ads are blocked on the device only.");
         proxy.setTitle("Proxy URL");
         screen.addPreference(proxy);
-
         Preference note = new Preference(screen.getContext());
-        note.setSummary("Optional. Live streams are loaded through this proxy, which can remove "
-                + "the ads that are part of the stream. {channel} is replaced with the channel "
-                + "name; without it, the name is added to the end.\n\n"
-                + "With a proxy, the ad-free viewing of your subscriptions and Turbo no longer "
-                + "applies, and the proxy's operator can see which channels you watch. If the "
-                + "proxy fails, uyu shows \"Proxy failed\" and blocks ads on the device only.");
+        note.setSummary("Optional. Live streams are loaded through this proxy, which can remove the ads that are part of the stream. {channel} is replaced with the channel name; without it, the name is added to the end.\n\nWith a proxy, the ad-free viewing of your subscriptions and Turbo no longer applies, and the proxy's operator can see which channels you watch. If the proxy fails, uyu shows \"Proxy failed\" and blocks ads on the device only.");
         note.setSelectable(false);
         screen.addPreference(note);
     }
 
     private void addEmoteSettings(PreferenceScreen screen) {
-        addSwitch(screen, Settings.EMOTES_THIRD_PARTY, "3rd party emotes",
-                "Show 7TV, BTTV and FFZ emotes in live chat.");
-        addSwitch(screen, Settings.EMOTES_ANIMATED, "Animated emotes",
-                "Play animated third-party emotes. Turn this off to use static frames.");
-        addSwitch(screen, Settings.EMOTES_PICKER, "Third-party emotes in Twitch picker",
-                "Add 7TV, BTTV and FFZ emotes to Twitch's native emote list.");
-        addSwitch(screen, Settings.EMOTES_AUTOCOMPLETE, "Emote autocomplete",
-                "Offer 7TV, BTTV and FFZ emote suggestions while typing in chat.");
-        addSwitch(screen, Settings.EMOTES_TAP_PREVIEW, "Emote tap previews",
-                "Open Twitch's emote card when tapping a 7TV, BTTV or FFZ chat emote.");
-        addSwitch(screen, Settings.EMOTES_ZERO_WIDTH, "Zero-width emotes",
-                "Allow third-party overlay emotes marked as zero-width.");
+        addSwitch(screen, Settings.EMOTES_THIRD_PARTY, "3rd party emotes", "Show 7TV, BTTV and FFZ emotes in live chat.");
+        addSwitch(screen, Settings.EMOTES_ANIMATED, "Animated emotes", "Play animated third-party emotes. Turn this off to use static frames.");
+        addSwitch(screen, Settings.EMOTES_PICKER, "Third-party emotes in Twitch picker", "Add 7TV, BTTV and FFZ emotes to Twitch's native emote list.");
+        addSwitch(screen, Settings.EMOTES_AUTOCOMPLETE, "Emote autocomplete", "Offer 7TV, BTTV and FFZ emote suggestions while typing in chat.");
+        addSwitch(screen, Settings.EMOTES_TAP_PREVIEW, "Emote tap previews", "Open Twitch's emote card when tapping a 7TV, BTTV or FFZ chat emote.");
+        addSwitch(screen, Settings.EMOTES_ZERO_WIDTH, "Zero-width emotes", "Allow third-party overlay emotes marked as zero-width.");
     }
 
     private void addChatSettings(PreferenceScreen screen) {
-        addSwitch(screen, Settings.CHAT_DELETED_MESSAGES, "Deleted messages",
-                "Control whether deleted chat messages remain visible locally.");        
+        addSwitch(screen, Settings.CHAT_DELETED_MESSAGES, "Deleted messages", "Control whether deleted chat messages remain visible locally.");
         Preference deletedMessageStyle = new Preference(screen.getContext());
         deletedMessageStyle.setTitle("Deleted message style");
         deletedMessageStyle.setSummary(deletedMessageStyleName(Settings.CHAT_DELETED_MESSAGES_STYLE.get()));
@@ -245,76 +235,54 @@ public class UyuSettingsFragment extends PreferenceFragment {
                         deletedMessageStyle.setSummary(names[which]);
                         dialog.dismiss();
                     })
-                    .setNegativeButton(android.R.string.cancel, null)
-                    .show();
+                    .setNegativeButton(android.R.string.cancel, null).show();
             return true;
         });
         screen.addPreference(deletedMessageStyle);
-
-        addSwitch(screen, Settings.CHAT_TIMESTAMPS, "Chat timestamps",
-                "Show timestamps on chat messages.");
-        addSwitch(screen, Settings.CHAT_MENTION_HIGHLIGHT, "Highlight mentions",
-                "Highlight chat messages that directly mention your account.");
-        addSwitch(screen, Settings.LANDSCAPE_CHAT_SIZE_ENABLED, "Landscape chat size",
-                "Use the custom landscape chat width.");
-        addSlider(screen, Settings.LANDSCAPE_CHAT_SIZE, 5, "Landscape chat width",
-                value -> value + "% of the screen");
-        addSwitch(screen, Settings.LANDSCAPE_CHAT_OPACITY_ENABLED, "Landscape chat opacity",
-                "Use the custom landscape chat opacity.");
-        addSlider(screen, Settings.LANDSCAPE_CHAT_OPACITY, 5, "Landscape chat opacity",
-                value -> value + "%");
+        addSwitch(screen, Settings.CHAT_TIMESTAMPS, "Chat timestamps", "Show timestamps on chat messages.");
+        addSwitch(screen, Settings.CHAT_MENTION_HIGHLIGHT, "Highlight mentions", "Highlight chat messages that directly mention your account.");
+        addSwitch(screen, Settings.LANDSCAPE_CHAT_SIZE_ENABLED, "Landscape chat size", "Use the custom landscape chat width.");
+        addSlider(screen, Settings.LANDSCAPE_CHAT_SIZE, 5, "Landscape chat width", value -> value + "% of the screen");
+        addSwitch(screen, Settings.LANDSCAPE_CHAT_OPACITY_ENABLED, "Landscape chat opacity", "Use the custom landscape chat opacity.");
+        addSlider(screen, Settings.LANDSCAPE_CHAT_OPACITY, 5, "Landscape chat opacity", value -> value + "%");
     }
 
     private static int deletedMessageStyleIndex(String value) {
         if ("strikethrough".equalsIgnoreCase(value)) return 1;
         if ("grey".equalsIgnoreCase(value)) return 2;
-        // "default" is a legacy value and is equivalent to Mod.
         return 0;
     }
 
     private static String deletedMessageStyleName(String value) {
         if ("strikethrough".equalsIgnoreCase(value)) return "Strikethrough";
         if ("grey".equalsIgnoreCase(value) || "gray".equalsIgnoreCase(value)) return "Gray";
-        // "default" is a legacy value and is equivalent to Mod.
         return "Mod";
     }
 
     private void addHomeSettings(PreferenceScreen screen) {
-        addSwitch(screen, Settings.HIDE_TURBO_UPSELL, "Hide Go Ad-Free",
-                "Hide Twitch's Go Ad-Free/Turbo control in the Following feed.");
-        addSwitch(screen, Settings.HIDE_RESUME_WATCHING, "Hide Continue Watching",
-                "Remove the Continue Watching / resume-watching section from the Following feed.");
-        addSwitch(screen, Settings.HIDE_OFFLINE_CHANNELS, "Hide Offline Channels",
-                "Remove the offline followed-channels section from the Following feed.");
+        addSwitch(screen, Settings.HIDE_TURBO_UPSELL, "Hide Go Ad-Free", "Hide Twitch's Go Ad-Free/Turbo control in the Following feed.");
+        addSwitch(screen, Settings.HIDE_RESUME_WATCHING, "Hide Continue Watching", "Remove the Continue Watching / resume-watching section from the Following feed.");
+        addSwitch(screen, Settings.HIDE_OFFLINE_CHANNELS, "Hide Offline Channels", "Remove the offline followed-channels section from the Following feed.");
     }
 
     private void addPlayerSettings(PreferenceScreen screen) {
-        addSwitch(screen, Settings.SHOW_VIDEO_STATS_BUTTON, "Show Video Stats Button",
-                "Show Twitch's live playback statistics panel immediately to the left of Reload Stream.");
-        addSwitch(screen, Settings.HIDE_PLAYER_CREATE_CLIP_BUTTON, "Hide Create Clip Button",
-                "Hide Twitch's Create Clip button in the player.");
+        addSwitch(screen, Settings.SHOW_VIDEO_STATS_BUTTON, "Show Video Stats Button", "Show Twitch's live playback statistics panel immediately to the left of Reload Stream.");
+        addSwitch(screen, Settings.HIDE_PLAYER_CREATE_CLIP_BUTTON, "Hide Create Clip Button", "Hide Twitch's Create Clip button in the player.");
     }
 
     private void addPrivacySettings(PreferenceScreen screen) {
-        addSwitch(screen, Settings.DISABLE_COMSCORE, "Disable Comscore",
-                "Prevent Twitch's Comscore measurement component from starting.");
-        addSwitch(screen, Settings.DISABLE_BUGSNAG, "Disable crash reporting",
-                "Prevent Twitch's crash-reporting component from collecting reports.");
-        addSwitch(screen, Settings.DISABLE_LINK_DISCLAIMER, "Disable link disclaimer",
-                "Skip Twitch's external-link disclaimer before opening links.");
+        addSwitch(screen, Settings.DISABLE_COMSCORE, "Disable Comscore", "Prevent Twitch's Comscore measurement component from starting.");
+        addSwitch(screen, Settings.DISABLE_BUGSNAG, "Disable crash reporting", "Prevent Twitch's crash-reporting component from collecting reports.");
+        addSwitch(screen, Settings.DISABLE_LINK_DISCLAIMER, "Disable link disclaimer", "Skip Twitch's external-link disclaimer before opening links.");
     }
 
     @Override
     public View onCreateView(LayoutInflater inflater, ViewGroup container, Bundle savedInstanceState) {
         View list = super.onCreateView(inflater, container, savedInstanceState);
         if (!SECTION_DANMAKU.equals(section)) return list;
-
-        // The preview stays above the list, so it is visible while any setting is changed.
         LinearLayout layout = new LinearLayout(getActivity());
         layout.setOrientation(LinearLayout.VERTICAL);
-        LinearLayout.LayoutParams previewParams = new LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
-        // The preview is narrower than the screen in landscape.
+        LinearLayout.LayoutParams previewParams = new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
         previewParams.gravity = Gravity.CENTER_HORIZONTAL;
         layout.addView(new DanmakuPreview(getActivity()), previewParams);
         layout.addView(list, new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, 0, 1f));
@@ -360,31 +328,21 @@ public class UyuSettingsFragment extends PreferenceFragment {
     private static String title(String section) {
         if (section == null) return SettingsPatch.TITLE;
         switch (section) {
-            case SECTION_GENERAL:
-                return "General";
-            case SECTION_APPEARANCE:
-                return "Appearance";
-            case SECTION_DANMAKU:
-                return "Danmaku";
-            case SECTION_ADS:
-                return "Ads";
-            case SECTION_EMOTES:
-                return "Emotes";
-            case SECTION_CHAT:
-                return "Chat";
-            case SECTION_PRIVACY:
-                return "Privacy";
-            case SECTION_HOME:
-                return "Home & navigation";
-            case SECTION_PLAYER:
-                return "Player Controls";
-            default:
-                return SettingsPatch.TITLE;
+            case SECTION_KIZU: return "追加機能";
+            case SECTION_GENERAL: return "General";
+            case SECTION_APPEARANCE: return "Appearance";
+            case SECTION_DANMAKU: return "Danmaku";
+            case SECTION_ADS: return "Ads";
+            case SECTION_EMOTES: return "Emotes";
+            case SECTION_CHAT: return "Chat";
+            case SECTION_PRIVACY: return "Privacy";
+            case SECTION_HOME: return "Home & navigation";
+            case SECTION_PLAYER: return "Player Controls";
+            default: return SettingsPatch.TITLE;
         }
     }
 
-    private void addSwitch(PreferenceGroup group, BooleanSetting setting,
-                                  String title, String summary) {
+    private void addSwitch(PreferenceGroup group, BooleanSetting setting, String title, String summary) {
         SwitchPreference preference = new SwitchPreference(SettingsUi.preferenceContext(group.getContext()));
         preference.setKey(setting.key);
         preference.setDefaultValue(setting.defaultValue);
@@ -393,8 +351,7 @@ public class UyuSettingsFragment extends PreferenceFragment {
         group.addPreference(preference);
     }
 
-    private static void addSlider(PreferenceGroup group, IntSetting setting, int step,
-                                  String title, SliderPreference.Formatter formatter) {
+    private static void addSlider(PreferenceGroup group, IntSetting setting, int step, String title, SliderPreference.Formatter formatter) {
         Preference preference = new SliderPreference(SettingsUi.preferenceContext(group.getContext()), setting, step, formatter);
         preference.setTitle(title);
         group.addPreference(preference);
@@ -406,4 +363,3 @@ public class UyuSettingsFragment extends PreferenceFragment {
         group.addPreference(preference);
     }
 }
-
