@@ -112,6 +112,28 @@ public class UyuSettingsFragment extends PreferenceFragment {
         addSectionLink(screen, SECTION_PLAYER, "Player Controls");
         addSectionLink(screen, SECTION_HOME, "Home & navigation controls");
         addSectionLink(screen, SECTION_PRIVACY, "Privacy");
+        addBackupLinks(screen);
+    }
+
+    // Kizu: 設定のエクスポート / インポート
+    private void addBackupLinks(PreferenceScreen screen) {
+        Preference export = new Preference(SettingsUi.preferenceContext(screen.getContext()));
+        export.setTitle("Export settings");
+        export.setSummary("今の設定をファイルに保存します");
+        export.setOnPreferenceClickListener(clicked -> {
+            SettingsBackup.startExport(this);
+            return true;
+        });
+        screen.addPreference(export);
+
+        Preference imp = new Preference(SettingsUi.preferenceContext(screen.getContext()));
+        imp.setTitle("Import settings");
+        imp.setSummary("保存した設定ファイルを読み込みます");
+        imp.setOnPreferenceClickListener(clicked -> {
+            SettingsBackup.startImport(this);
+            return true;
+        });
+        screen.addPreference(imp);
     }
 
     private void addSectionLink(PreferenceScreen screen, String linkedSection, String summary) {
@@ -334,6 +356,7 @@ public class UyuSettingsFragment extends PreferenceFragment {
             fontPreference.onActivityResult(resultCode, data);
             return;
         }
+        if (SettingsBackup.onActivityResult(getActivity(), requestCode, resultCode, data)) return;
         super.onActivityResult(requestCode, resultCode, data);
     }
 
