@@ -22,7 +22,11 @@ public final class DanmakuComment {
     int row;
     /** Time on the view's clock when the comment entered at the right edge. */
     long start;
-    /** Time on the view's clock when the comment started waiting for a free row. */
+
+    // Kizu: 待機列用
+    /** これより前には流さない時刻 (uptime) */
+    long due;
+    /** 待機列に入った時刻 (uptime) */
     long queuedAt;
 
     public DanmakuComment(Object[] parts) {
