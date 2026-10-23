@@ -59,7 +59,7 @@ final class DanmakuOverlay {
         danmaku.setVisibility(View.INVISIBLE);
         player.addView(danmaku, 1, new FrameLayout.LayoutParams(0, 0, Gravity.TOP | Gravity.LEFT));
 
-        quickSettings = new DanmakuQuickSettings((FrameLayout) controls);
+        quickSettings = new DanmakuQuickSettings(controls);
 
         int iconSize = Math.round(24 * context.getResources().getDisplayMetrics().density);
         icon = new DanmakuToggleIcon(iconSize);
