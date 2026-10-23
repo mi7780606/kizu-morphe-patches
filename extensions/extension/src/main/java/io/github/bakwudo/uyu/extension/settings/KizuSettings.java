@@ -1,0 +1,20 @@
+package io.github.bakwudo.uyu.extension.settings;
+
+public final class KizuSettings {
+    public static final BooleanSetting SMOOTH_CHAT =
+            new BooleanSetting("kizu_smooth_chat", true);
+    public static final BooleanSetting SMOOTH_SCROLL =
+            new BooleanSetting("kizu_smooth_scroll", true);
+    public static final BooleanSetting CHAT_HISTORY =
+            new BooleanSetting("kizu_chat_history", true);
+    public static final BooleanSetting HIDE_HYPE_TRAIN =
+            new BooleanSetting("kizu_hide_hype_train", true);
+    public static final BooleanSetting HIDE_CLAIM_POPUP =
+            new BooleanSetting("kizu_hide_claim_popup", true);
+    public static final BooleanSetting DANMAKU_QUICK_SETTINGS =
+            new BooleanSetting("kizu_danmaku_quick_settings", true);
+    public static final BooleanSetting DEBUG_MESSAGES =
+            new BooleanSetting("kizu_debug_messages", true);
+
+    private KizuSettings() {}
+}
