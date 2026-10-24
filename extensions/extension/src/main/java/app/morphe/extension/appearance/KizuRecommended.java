@@ -372,6 +372,7 @@ public final class KizuRecommended {
             c.setRequestProperty("Content-Type", "application/json");
             c.setRequestProperty("Client-ID", CLIENT_ID);
             if (!token.isEmpty()) c.setRequestProperty("Authorization", "OAuth " + token);
+            c.setRequestProperty("X-Device-ID", deviceId());
             byte[] b = body.getBytes(StandardCharsets.UTF_8);
             c.setFixedLengthStreamingMode(b.length);
             c.getOutputStream().write(b);
@@ -392,6 +393,26 @@ public final class KizuRecommended {
         } finally {
             if (c != null) c.disconnect();
         }
+    }
+
+    private static String deviceId;
+
+    /** おすすめの取得に必要な端末ID（このアプリ用に1回作って使い回す） */
+    private static String deviceId() {
+        if (deviceId != null) return deviceId;
+        try {
+            Context c = app.morphe.extension.Utils.getContext();
+            SharedPreferences p = c.getSharedPreferences("uyu_settings", Context.MODE_PRIVATE);
+            String id = p.getString("kizu_device_id", null);
+            if (id == null) {
+                id = UUID.randomUUID().toString().replace("-", "");
+                p.edit().putString("kizu_device_id", id).apply();
+            }
+            deviceId = id;
+        } catch (Throwable t) {
+            deviceId = UUID.randomUUID().toString().replace("-", "");
+        }
+        return deviceId;
     }
 
     private static int dp(float d, int v) { return Math.round(v * d); }
