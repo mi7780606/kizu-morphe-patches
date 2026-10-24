@@ -120,6 +120,7 @@ public class UyuSettingsFragment extends PreferenceFragment {
     }
 
     private void addSectionLinks(PreferenceScreen screen) {
+        KizuExtraSettingsFragment.addLink(this, screen);
         if (PatchStatus.autoClaimChannelPoints()) addSectionLink(screen, SECTION_GENERAL, "Channel points");
         if (PatchStatus.hidePromotions()) addSectionLink(screen, SECTION_APPEARANCE,
                 "Subscribe and Bits buttons, gift leaderboard, promotions");
