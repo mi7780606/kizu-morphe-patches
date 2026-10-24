@@ -58,6 +58,10 @@ public final class DanmakuPatch {
 
     public static void onMessagesReceived(String channelId, List<?> messages, boolean fromHistory) {
         try {
+            NgWordFilter.filter(messages); // NGワード（完全一致）を取り除く
+        } catch (Throwable ignored) {
+        }
+        try {
             if (fromHistory || messages == null || messages.isEmpty()) return;
             List<DanmakuComment> comments = DanmakuMessages.toComments(messages);
             if (comments.isEmpty() || currentOverlay.get() == null || !Settings.DANMAKU_ENABLED.get()) return;

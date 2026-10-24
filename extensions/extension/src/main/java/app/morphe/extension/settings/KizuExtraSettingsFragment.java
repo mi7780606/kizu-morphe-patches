@@ -7,7 +7,11 @@ import android.preference.Preference;
 import android.preference.PreferenceFragment;
 import android.preference.PreferenceScreen;
 import android.preference.SwitchPreference;
+import android.app.AlertDialog;
+import android.text.InputType;
 import android.util.Log;
+import android.widget.EditText;
+import android.widget.FrameLayout;
 import android.view.View;
 import android.widget.TextView;
 
@@ -86,6 +90,17 @@ public class KizuExtraSettingsFragment extends PreferenceFragment {
                     "弾幕の設定ボタン",
                     "プレイヤー右上に弾幕のクイック設定ボタンを表示します。");
 
+            addSwitch(screen, KizuSettings.HIDE_CHAT_MENU_BUTTON.key, KizuSettings.HIDE_CHAT_MENU_BUTTON.defaultValue,
+                    "チャット欄の三点リーダーを非表示",
+                    "チャット入力欄の右にあるチャット設定ボタン（︙）を隠します。");
+            addNgWords(screen);
+            addSwitch(screen, KizuSettings.PREDICTION_AUTO.key, KizuSettings.PREDICTION_AUTO.defaultValue,
+                    "予想に自動で参加",
+                    "予想が始まったら、指定の番号とポイントで自動で賭けます。チャンネルポイント画面の「予想」ボタンからも設定できます。");
+            addNumber(screen, "賭ける番号", "1が一番上の選択肢（1〜10）",
+                    KizuSettings.PREDICTION_OUTCOME.key, KizuSettings.PREDICTION_OUTCOME.defaultValue, 1, 10);
+            addNumber(screen, "賭けるポイント", "1回の予想で賭けるポイント",
+                    KizuSettings.PREDICTION_POINTS.key, KizuSettings.PREDICTION_POINTS.defaultValue, 1, 250000);
             Preference note = new Preference(screen.getContext());
             note.setSummary("切り替えはすぐに反映されます。");
             note.setSelectable(false);
@@ -93,6 +108,82 @@ public class KizuExtraSettingsFragment extends PreferenceFragment {
         } catch (Throwable t) {
             Log.e(TAG, "build failed", t);
         }
+    }
+
+    private void addNgWords(PreferenceScreen screen) {
+        Preference p = new Preference(SettingsUi.preferenceContext(screen.getContext()));
+        p.setTitle("NGワード");
+        p.setSummary(ngSummary());
+        p.setOnPreferenceClickListener(clicked -> {
+            Activity a = getActivity();
+            if (a == null) return true;
+            float d = a.getResources().getDisplayMetrics().density;
+            EditText text = new EditText(a);
+            text.setInputType(InputType.TYPE_CLASS_TEXT | InputType.TYPE_TEXT_FLAG_MULTI_LINE
+                    | InputType.TYPE_TEXT_FLAG_NO_SUGGESTIONS);
+            text.setSingleLine(false);
+            text.setMinLines(4);
+            text.setHint("1行に1つ。本文と完全一致したコメントだけ消えます");
+            text.setText(KizuSettings.NG_WORDS.get());
+            FrameLayout box = new FrameLayout(a);
+            int pad = (int) (20 * d);
+            box.setPadding(pad, pad / 2, pad, 0);
+            box.addView(text);
+            new AlertDialog.Builder(a)
+                    .setTitle("NGワード")
+                    .setView(box)
+                    .setPositiveButton(android.R.string.ok, (dlg, w) -> {
+                        KizuSettings.NG_WORDS.save(text.getText().toString());
+                        p.setSummary(ngSummary());
+                    })
+                    .setNegativeButton(android.R.string.cancel, null)
+                    .show();
+            return true;
+        });
+        screen.addPreference(p);
+    }
+
+    private static String ngSummary() {
+        String raw = KizuSettings.NG_WORDS.get();
+        int count = 0;
+        if (raw != null) for (String s : raw.split("\n")) if (!s.trim().isEmpty()) count++;
+        return count == 0 ? "未設定（本文と完全一致したコメントだけ非表示）" : count + "件登録中（完全一致のみ非表示）";
+    }
+
+    private void addNumber(PreferenceScreen screen, String title, String hint, String key,
+            int def, int min, int max) {
+        Preference p = new Preference(SettingsUi.preferenceContext(screen.getContext()));
+        p.setTitle(title);
+        android.content.SharedPreferences sp = getPreferenceManager().getSharedPreferences();
+        p.setSummary(String.valueOf(sp.getInt(key, def)));
+        p.setOnPreferenceClickListener(clicked -> {
+            Activity a = getActivity();
+            if (a == null) return true;
+            float d = a.getResources().getDisplayMetrics().density;
+            EditText text = new EditText(a);
+            text.setInputType(InputType.TYPE_CLASS_NUMBER);
+            text.setSingleLine(true);
+            text.setHint(hint);
+            text.setText(String.valueOf(sp.getInt(key, def)));
+            FrameLayout box = new FrameLayout(a);
+            int pad = (int) (20 * d);
+            box.setPadding(pad, pad / 2, pad, 0);
+            box.addView(text);
+            new AlertDialog.Builder(a)
+                    .setTitle(title)
+                    .setView(box)
+                    .setPositiveButton(android.R.string.ok, (dlg, w) -> {
+                        int v;
+                        try { v = Integer.parseInt(text.getText().toString().trim()); } catch (Throwable t) { v = def; }
+                        v = Math.max(min, Math.min(max, v));
+                        sp.edit().putInt(key, v).apply();
+                        p.setSummary(String.valueOf(v));
+                    })
+                    .setNegativeButton(android.R.string.cancel, null)
+                    .show();
+            return true;
+        });
+        screen.addPreference(p);
     }
 
     private void addSwitch(PreferenceScreen screen, String key, boolean defaultValue,

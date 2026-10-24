@@ -116,6 +116,11 @@ public final class ChannelPoints {
         watcher.start();
     }
 
+    /** Kizu: 視聴中チャンネルのID（予想の自動参加で使う） */
+    public static String currentChannelId() {
+        return channelId;
+    }
+
     /** Called by the existing stable ChannelChatConnectionKey(String,String) hook. */
     public static void onChannelChanged(String id, String login) {
         String newId = normalize(id);
