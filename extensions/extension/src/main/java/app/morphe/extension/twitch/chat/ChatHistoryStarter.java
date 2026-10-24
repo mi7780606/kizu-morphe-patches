@@ -4,20 +4,18 @@ import android.app.Activity;
 import android.util.Log;
 import android.view.View;
 import android.view.ViewTreeObserver;
-import android.widget.Toast;
 
 import java.lang.ref.WeakReference;
 import java.util.Map;
 import java.util.WeakHashMap;
 
+/** 画面が開いたらチャット欄を探して ChatHistory を付ける */
 public final class ChatHistoryStarter {
     private static final String TAG = "KizuChatHistory";
-    private static final boolean DEBUG = true;
     private static final long SCAN_DELAY_MS = 500;
 
     private static final Map<View, Boolean> ROOTS = new WeakHashMap<>();
     private static int listId = -1;
-    private static boolean announced;
 
     private ChatHistoryStarter() {}
 
@@ -32,13 +30,10 @@ public final class ChatHistoryStarter {
                 listId = activity.getResources().getIdentifier(
                         "chat_message_recycler_view", "id", activity.getPackageName());
             }
-            if (DEBUG && !announced) {
-                announced = true;
-                Toast.makeText(activity.getApplicationContext(),
-                        "Kizu 過去コメント: 起動（チャット欄ID " + (listId != 0 ? "OK" : "なし") + "）",
-                        Toast.LENGTH_SHORT).show();
+            if (listId == 0) {
+                Log.i(TAG, "chat list id not found");
+                return;
             }
-            if (listId == 0) return;
 
             Finder f = new Finder(decor);
             decor.getViewTreeObserver().addOnGlobalLayoutListener(f);
