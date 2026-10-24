@@ -99,12 +99,17 @@ public final class KizuUiTweaks {
     private static void addPredictionButton(View root) {
         if (outerId == 0 || headerId == 0) return;
         View outer = root.findViewById(outerId);
-        if (outer == null || !outer.isShown()) return;
+        if (outer == null) return;
         View h = outer.findViewById(headerId);
         if (!(h instanceof LinearLayout)) return;
         LinearLayout header = (LinearLayout) h;
-        if (header.findViewWithTag(BUTTON_TAG) != null) return;
+        View more = moreId != 0 ? header.findViewById(moreId) : null;
+        addPredictionButtonTo(header, more);
+    }
 
+    /** チャンネルポイント画面の見出しに「予想」ボタンを置く（予想がなくても常に出す） */
+    static void addPredictionButtonTo(LinearLayout header, View before) {
+        if (header.findViewWithTag(BUTTON_TAG) != null) return;
         Context c = header.getContext();
         float d = c.getResources().getDisplayMetrics().density;
         TextView b = new TextView(c);
@@ -116,18 +121,12 @@ public final class KizuUiTweaks {
         b.setPadding((int) (8 * d), 0, (int) (8 * d), 0);
         b.setContentDescription("予想の自動参加の設定");
         b.setOnClickListener(v -> showDialog(v.getContext()));
-
-        int index = header.getChildCount();
-        if (moreId != 0) {
-            View more = header.findViewById(moreId);
-            int i = more == null ? -1 : header.indexOfChild(more);
-            if (i >= 0) index = i;
-        }
+        int i = before == null ? -1 : header.indexOfChild(before);
+        int index = i >= 0 ? i : header.getChildCount();
         LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(
                 ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.MATCH_PARENT);
         header.addView(b, index, lp);
     }
-
     private static void showDialog(Context c) {
         try {
             float d = c.getResources().getDisplayMetrics().density;

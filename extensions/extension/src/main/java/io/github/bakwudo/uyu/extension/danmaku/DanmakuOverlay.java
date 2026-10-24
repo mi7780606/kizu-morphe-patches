@@ -34,6 +34,7 @@ final class DanmakuOverlay {
     private final ImageView button;
     private final DanmakuToggleIcon icon;
     private final ImageView settingsButton;
+    private final ImageView chatButton;
     private final DanmakuQuickSettings quickSettings;
     private final Rect rect = new Rect();
     private final Rect buttonRect = new Rect();
@@ -85,6 +86,24 @@ final class DanmakuOverlay {
         settingsButton.setTranslationZ(1);
         settingsButton.setOutlineProvider(null);
         controls.addView(settingsButton, new FrameLayout.LayoutParams(0, 0, Gravity.TOP | Gravity.RIGHT));
+
+        // チャット設定を開くボタン（チャット欄の三点リーダーの代わり）
+        chatButton = new ImageView(context);
+        int chatIcon = Utils.getResourceId(context, "ic_chat_settings", "drawable");
+        if (chatIcon != 0) chatButton.setImageResource(chatIcon);
+        chatButton.setScaleType(ImageView.ScaleType.FIT_CENTER);
+        chatButton.setContentDescription("Chat settings");
+        chatButton.setVisibility(View.INVISIBLE);
+        chatButton.setOnClickListener(v -> {
+            try {
+                app.morphe.extension.appearance.KizuHooks.openChatSettings();
+            } catch (Throwable t) {
+                Utils.logError("Kizu: chat settings failed", t);
+            }
+        });
+        chatButton.setTranslationZ(1);
+        chatButton.setOutlineProvider(null);
+        controls.addView(chatButton, new FrameLayout.LayoutParams(0, 0, Gravity.TOP | Gravity.RIGHT));
 
         player.addOnLayoutChangeListener((v, l, t, r, b, ol, ot, or, ob) -> update());
         video.addOnLayoutChangeListener((v, l, t, r, b, ol, ot, or, ob) -> update());
@@ -188,6 +207,7 @@ final class DanmakuOverlay {
         boolean visible = controlsShown && isAvailable();
         button.setVisibility(visible ? View.VISIBLE : View.INVISIBLE);
         settingsButton.setVisibility(visible ? View.VISIBLE : View.INVISIBLE);
+        chatButton.setVisibility(controlsShown ? View.VISIBLE : View.INVISIBLE);
 
         if (!controlsShown) return;
 
@@ -208,6 +228,7 @@ final class DanmakuOverlay {
         int rightMargin = Math.max(0, controls.getWidth() - left);
         layoutButton(button, template, size, rightMargin);
         layoutButton(settingsButton, template, size, rightMargin + size);
+        layoutButton(chatButton, template, size, rightMargin + size * 2);
     }
 
     private static void layoutButton(ImageView target, View template, int size, int rightMargin) {
