@@ -81,6 +81,7 @@ public final class KizuUiTweaks {
             try {
                 hideChatMenu(root);
                 addPredictionButton(root);
+                try { KizuRecommended.update(root); } catch (Throwable t) { Log.e(TAG, "recommended failed", t); }
             } catch (Throwable t) {
                 Log.e(TAG, "scan failed", t);
             }

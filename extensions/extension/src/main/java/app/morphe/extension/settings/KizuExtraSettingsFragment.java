@@ -93,6 +93,9 @@ public class KizuExtraSettingsFragment extends PreferenceFragment {
             addSwitch(screen, KizuSettings.HIDE_CHAT_MENU_BUTTON.key, KizuSettings.HIDE_CHAT_MENU_BUTTON.defaultValue,
                     "チャット欄の三点リーダーを非表示",
                     "チャット入力欄の右にあるチャット設定ボタン（︙）を隠します。");
+            addSwitch(screen, KizuSettings.RECOMMENDED_CHANNELS.key, KizuSettings.RECOMMENDED_CHANNELS.defaultValue,
+                    "あなたにおすすめのチャンネル",
+                    "フォロー中で「ライブ」を選んだとき、一番上におすすめの配信を4件表示します。");
             addNgWords(screen);
             addSwitch(screen, KizuSettings.PREDICTION_AUTO.key, KizuSettings.PREDICTION_AUTO.defaultValue,
                     "予想に自動で参加",

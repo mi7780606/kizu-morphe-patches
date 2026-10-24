@@ -36,5 +36,9 @@ public final class KizuSettings {
     public static final IntSetting PREDICTION_POINTS =
             new IntSetting("kizu_prediction_points", 100, 1, 250000);
 
+    /** フォロー中「ライブ」の一番上におすすめのチャンネルを出す */
+    public static final BooleanSetting RECOMMENDED_CHANNELS =
+            new BooleanSetting("kizu_recommended_channels", true);
+
     private KizuSettings() {}
 }
