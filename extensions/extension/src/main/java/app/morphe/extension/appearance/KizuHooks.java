@@ -51,6 +51,18 @@ public final class KizuHooks {
         }
     }
 
+    /** en9（報酬一覧）のコンストラクタ末尾から呼ばれる。「〇〇の報酬」の行の︙の左に置く */
+    public static void onRewardsCreated(Object delegate) {
+        try {
+            ImageView more = findImageView(delegate, "reward_options");
+            if (more == null) return;
+            ViewParent p = more.getParent();
+            if (p instanceof LinearLayout) KizuUiTweaks.addPredictionButtonTo((LinearLayout) p, more);
+        } catch (Throwable t) {
+            Log.e(TAG, "rewards hook failed", t);
+        }
+    }
+
     private static ImageView findImageView(Object delegate, String idName) throws IllegalAccessException {
         if (delegate == null) return null;
         Context c = null;

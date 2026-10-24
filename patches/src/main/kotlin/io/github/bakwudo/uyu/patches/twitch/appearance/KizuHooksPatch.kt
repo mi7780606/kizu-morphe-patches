@@ -12,6 +12,8 @@ private const val HOOKS = "Lapp/morphe/extension/appearance/KizuHooks;"
 // Twitch 31.3.1: i76 = チャット入力欄 (chat_message_input_view), tb9 = チャンネルポイント画面 (community_points_container)
 private const val CHAT_INPUT = "Li76;"
 private const val COMMUNITY_POINTS = "Ltb9;"
+// en9 = チャンネルポイントの報酬一覧 (reward_layout_container)
+private const val REWARDS = "Len9;"
 
 @Suppress("unused")
 val kizuHooksPatch = bytecodePatch(
@@ -38,5 +40,6 @@ val kizuHooksPatch = bytecodePatch(
         }
         hookConstructor(CHAT_INPUT, "onChatInputCreated")
         hookConstructor(COMMUNITY_POINTS, "onCommunityPointsCreated")
+        hookConstructor(REWARDS, "onRewardsCreated")
     }
 }

@@ -124,7 +124,10 @@ public final class KizuUiTweaks {
         int i = before == null ? -1 : header.indexOfChild(before);
         int index = i >= 0 ? i : header.getChildCount();
         LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.MATCH_PARENT);
+                ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT);
+        lp.gravity = Gravity.CENTER_VERTICAL;
+        b.setMinHeight((int) (40 * d));
+        b.setTextSize(TypedValue.COMPLEX_UNIT_SP, 15);
         header.addView(b, index, lp);
     }
     private static void showDialog(Context c) {
