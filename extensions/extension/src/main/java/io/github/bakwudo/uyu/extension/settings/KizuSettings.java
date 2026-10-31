@@ -40,5 +40,12 @@ public final class KizuSettings {
     public static final BooleanSetting RECOMMENDED_CHANNELS =
             new BooleanSetting("kizu_recommended_channels", true);
 
+    /** 流速の「混雑」にする目安（毎秒のコメント数） */
+    public static final IntSetting FLOW_BUSY_RATE =
+            new IntSetting("kizu_flow_busy_rate", 30, 5, 500);
+    /** 流速の「激流」にする目安（毎秒のコメント数） */
+    public static final IntSetting FLOW_FLOOD_RATE =
+            new IntSetting("kizu_flow_flood_rate", 80, 10, 1000);
+
     private KizuSettings() {}
 }

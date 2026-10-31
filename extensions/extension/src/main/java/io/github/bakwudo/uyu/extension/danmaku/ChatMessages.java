@@ -37,6 +37,42 @@ public final class ChatMessages {
         return null;
     }
 
+    /**
+     * @param messageInfo A ChatMessageInfo.
+     * @return Its ChatUserInfo (the sender).
+     */
+    public static Object userInfo(Object messageInfo) {
+        return null;
+    }
+
+    /**
+     * @param messageInfo A ChatMessageInfo.
+     * @return When the message was sent (epoch ms), or null.
+     */
+    public static Long timestamp(Object messageInfo) {
+        return null;
+    }
+
+    /** @return The login name (lower case) of a ChatUserInfo. */
+    public static String userName(Object userInfo) {
+        return null;
+    }
+
+    /** @return The display name of a ChatUserInfo. */
+    public static String displayName(Object userInfo) {
+        return null;
+    }
+
+    /** @return The user id of a ChatUserInfo, or null. */
+    public static String userId(Object userInfo) {
+        return null;
+    }
+
+    /** @return The text (emote name) of a Twitch emote token. */
+    public static String emoteTokenText(Object token) {
+        return null;
+    }
+
     /** @return The text of a text token. */
     public static String textTokenText(Object token) {
         return null;

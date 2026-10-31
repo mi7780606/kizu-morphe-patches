@@ -62,16 +62,33 @@ public final class DanmakuPatch {
             NgWordFilter.filter(messages); // NGワード（完全一致）を取り除く
         } catch (Throwable ignored) {
         }
+        if (messages == null || messages.isEmpty()) return;
         try {
-            if (fromHistory || messages == null || messages.isEmpty()) return;
-            List<DanmakuComment> comments = DanmakuMessages.toComments(messages);
-            if (comments.isEmpty() || currentOverlay.get() == null || !Settings.DANMAKU_ENABLED.get()) return;
+            if (!fromHistory) app.morphe.extension.twitch.chat.ChatFlow.record(messages.size());
+        } catch (Throwable ignored) {
+        }
+        try {
+            // 過去コメント（名前タップ）の記録。過去ログの一括読み込みも記録する
+            app.morphe.extension.twitch.chat.ChatHistory.onMessages(channelId, messages, fromHistory);
+        } catch (Throwable ignored) {
+        }
+        try {
+            if (fromHistory) return;
+            // 弾幕が出ていないときは変換もしない（以前は常に全件を変換していた）
+            DanmakuOverlay overlay0 = currentOverlay.get();
+            if (overlay0 == null || !Settings.DANMAKU_ENABLED.get()) return;
+
+            int level = app.morphe.extension.twitch.chat.ChatFlow.level();
+            List<?> picked = DanmakuMessages.thin(messages, level);
+            if (picked.isEmpty()) return;
+            List<DanmakuComment> comments = DanmakuMessages.toComments(picked);
+            if (comments.isEmpty()) return;
 
             mainHandler.post(() -> {
                 DanmakuOverlay overlay = currentOverlay.get();
                 if (overlay != null) overlay.addComments(comments);
             });
-        } catch (Exception ex) {
+        } catch (Throwable ex) {
             Utils.logError("Danmaku: failed to handle chat messages", ex);
         }
     }

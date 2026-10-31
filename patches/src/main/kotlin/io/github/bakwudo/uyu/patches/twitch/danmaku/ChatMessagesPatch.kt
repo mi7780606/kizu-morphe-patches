@@ -67,6 +67,20 @@ internal fun BytecodePatchContext.hookChatMessages() {
     getter("emoteTokenId", emoteToken.type, emoteIdField)
     getter("bitsTokenPrefix", bitsToken.type, bitsToken.instanceField(STRING))
     getter("bitsTokenAmount", bitsToken.type, bitsToken.instanceField("I"))
+
+    // 過去コメント（名前タップ）用: 送信者とスタンプ名、送信時刻
+    val userInfo = ChatUserInfoToStringFingerprint.classDef
+    getter("userInfo", messageInfo.type, messageInfo.instanceField(userInfo.type))
+    getter("timestamp", messageInfo.type, messageInfo.instanceField("Ljava/lang/Long;"))
+    // toString prints userName, displayName, userMode, nameColor, then userId.
+    val userStrings = ChatUserInfoToStringFingerprint.originalMethod.fieldsRead(userInfo.type)
+        .filter { it.type == STRING }
+        .distinctBy { it.name }
+    if (userStrings.size != 3) throw PatchException("ChatUserInfo: expected 3 String fields, found ${userStrings.size}.")
+    getter("userName", userInfo.type, userStrings[0])
+    getter("displayName", userInfo.type, userStrings[1])
+    getter("userId", userInfo.type, userStrings[2])
+    getter("emoteTokenText", emoteToken.type, firstStringInToString(emoteToken))
 }
 
 /** The token class of ChatMessageInfo whose toString starts with [toStringPrefix]. */

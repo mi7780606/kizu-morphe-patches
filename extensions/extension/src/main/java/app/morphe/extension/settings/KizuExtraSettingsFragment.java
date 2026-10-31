@@ -79,10 +79,10 @@ public class KizuExtraSettingsFragment extends PreferenceFragment {
                     "新しいコメントが来たときのチャット欄の跳ねを滑らかにします。");
             addSwitch(screen, KizuSettings.CHAT_HISTORY.key, KizuSettings.CHAT_HISTORY.defaultValue,
                     "名前タップで過去コメント",
-                    "名前をタップするとその人の過去コメントを表示します。オフでTwitch本来のユーザーカードが開きます。");
+                    "名前をタップするとその人の過去コメント（新しい順・検索可）を表示します。画面に出なかったコメントも記録します。オフでTwitch本来のユーザーカードが開きます。");
             addSwitch(screen, KizuSettings.HIDE_HYPE_TRAIN.key, KizuSettings.HIDE_HYPE_TRAIN.defaultValue,
                     "ハイプトレインを非表示",
-                    "ハイプトレインのカードを消します。オフにしたときは、配信を開き直すと表示されます。");
+                    "ハイプトレインのカードを作らせずに消します。オフにしたときは、次のハイプトレインから表示されます。");
             addSwitch(screen, KizuSettings.HIDE_CLAIM_POPUP.key, KizuSettings.HIDE_CLAIM_POPUP.defaultValue,
                     "ポイント獲得の通知を非表示",
                     "チャンネルポイント自動獲得時のメッセージを出しません。自動獲得は続きます。");
@@ -97,6 +97,11 @@ public class KizuExtraSettingsFragment extends PreferenceFragment {
                     "あなたにおすすめのチャンネル",
                     "フォロー中で「ライブ」を選んだとき、一番上におすすめの配信を4件表示します。");
             addNgWords(screen);
+            addNumber(screen, "混雑とみなす流速", "毎秒このコメント数以上で、スクロール効果を止めて弾幕を半分程度に間引きます（5〜500）",
+                    KizuSettings.FLOW_BUSY_RATE.key, KizuSettings.FLOW_BUSY_RATE.defaultValue, 5, 500);
+            addNumber(screen, "激流とみなす流速", "毎秒このコメント数以上で、1件ずつ流すのを止めて弾幕を1秒10件までにします（10〜1000）",
+                    KizuSettings.FLOW_FLOOD_RATE.key, KizuSettings.FLOW_FLOOD_RATE.defaultValue, 10, 1000);
+            addCrashLog(screen);
             addSwitch(screen, KizuSettings.PREDICTION_AUTO.key, KizuSettings.PREDICTION_AUTO.defaultValue,
                     "予想に自動で参加",
                     "予想が始まったら、指定の番号とポイントで自動で賭けます。チャンネルポイント画面の「予想」ボタンからも設定できます。");
@@ -141,6 +146,49 @@ public class KizuExtraSettingsFragment extends PreferenceFragment {
                     })
                     .setNegativeButton(android.R.string.cancel, null)
                     .show();
+            return true;
+        });
+        screen.addPreference(p);
+    }
+
+    private void addCrashLog(PreferenceScreen screen) {
+        Preference p = new Preference(SettingsUi.preferenceContext(screen.getContext()));
+        p.setTitle("最後に落ちたときの記録");
+        app.morphe.extension.CrashLog.ensureFile(screen.getContext());
+        String log = app.morphe.extension.CrashLog.read();
+        p.setSummary(log.isEmpty() ? "記録なし" : "記録あり（タップで表示・コピー）");
+        p.setOnPreferenceClickListener(clicked -> {
+            Activity a = getActivity();
+            if (a == null) return true;
+            String text = app.morphe.extension.CrashLog.read();
+            float d = a.getResources().getDisplayMetrics().density;
+            TextView tv = new TextView(a);
+            tv.setText(text.isEmpty() ? "記録はありません" : text);
+            tv.setTextIsSelectable(true);
+            tv.setTextSize(android.util.TypedValue.COMPLEX_UNIT_SP, 11);
+            tv.setTypeface(android.graphics.Typeface.MONOSPACE);
+            int pad = (int) (16 * d);
+            tv.setPadding(pad, pad / 2, pad, pad / 2);
+            android.widget.ScrollView sv = new android.widget.ScrollView(a);
+            sv.addView(tv);
+            AlertDialog.Builder b = new AlertDialog.Builder(a)
+                    .setTitle("最後に落ちたときの記録")
+                    .setView(sv)
+                    .setNegativeButton("閉じる", null);
+            if (!text.isEmpty()) {
+                b.setNeutralButton("消去", (dlg, w) -> {
+                    app.morphe.extension.CrashLog.clear();
+                    p.setSummary("記録なし");
+                });
+                b.setPositiveButton("コピー", (dlg, w) -> {
+                    try {
+                        android.content.ClipboardManager cm = (android.content.ClipboardManager)
+                                a.getSystemService(android.content.Context.CLIPBOARD_SERVICE);
+                        cm.setPrimaryClip(android.content.ClipData.newPlainText("Kizu crash log", text));
+                    } catch (Throwable t) { Log.e(TAG, "copy failed", t); }
+                });
+            }
+            b.show();
             return true;
         });
         screen.addPreference(p);

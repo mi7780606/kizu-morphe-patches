@@ -29,6 +29,14 @@ internal object ChatMessageInfoToStringFingerprint : Fingerprint(
     strings = listOf("ChatMessageInfo(userInfo="),
 )
 
+/** ChatUserInfo(userName, displayName, userMode, nameColorARGB, userId): the sender of a message. */
+internal object ChatUserInfoToStringFingerprint : Fingerprint(
+    name = "toString",
+    returnType = "Ljava/lang/String;",
+    parameters = listOf(),
+    strings = listOf("ChatUserInfo(userName="),
+)
+
 /**
  * The Twitch emote token of ChatMessageInfo. Its superclass is the base class of all its tokens.
  * The other token classes have the same toString texts as tokens elsewhere in the app, so they

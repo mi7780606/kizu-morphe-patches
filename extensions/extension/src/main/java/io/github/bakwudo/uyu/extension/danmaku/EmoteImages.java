@@ -49,6 +49,8 @@ final class EmoteImages {
 
         Bitmap bitmap = cache.get(key);
         if (bitmap != null) return bitmap;
+        // 激流のあいだは新しいスタンプ画像を読み込まない（読み込み済みの分だけ表示）
+        if (app.morphe.extension.twitch.chat.ChatFlow.level() >= app.morphe.extension.twitch.chat.ChatFlow.FLOOD) return null;
 
         synchronized (loading) {
             if (loading.contains(key)) return null;

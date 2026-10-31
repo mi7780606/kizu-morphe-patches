@@ -23,8 +23,6 @@ public final class ChatPacer {
     private static final int HISTORY_BATCH = 30;
     private static final long MAX_DELAY_MS = 1000;
     private static final long MIN_SPACING_MS = 16;
-    private static final float OVERLOAD_ENTER_RATE = 40f;
-    private static final float OVERLOAD_EXIT_RATE = 25f;
     private static final long OVERLOAD_HOLD_MS = 3000;
     private static final int OVERLOAD_QUEUE = 80;
     private static final long LATE_MS = 200;
@@ -59,6 +57,9 @@ public final class ChatPacer {
         }
     }
 
+    /** 混雑時にまとめて流す間隔 */
+    private static final long BUSY_CHUNK_MS = 200;
+
     public static boolean intercept(Object adapter, List list) {
         if (bypass || broken || adapter == null || list == null || list.isEmpty()) return false;
         if (Looper.myLooper() != Looper.getMainLooper()) return false;
@@ -67,56 +68,57 @@ public final class ChatPacer {
             if (!KizuSettings.SMOOTH_CHAT.get()) {
                 State old = STATES.get(adapter);
                 if (old != null && !old.queue.isEmpty()) flush(old);
+                ChatSmoothScroll.setSuspended(false);
                 return false;
             }
         } catch (Throwable ignored) {}
 
         long now = SystemClock.uptimeMillis();
         State s;
+        int level;
         try {
             s = STATES.get(adapter);
             if (s == null) { s = new State(adapter); STATES.put(adapter, s); }
-            updateRate(s, now, list.size());
-            updateOverload(s, now);
-            if (list.size() >= HISTORY_BATCH || s.overload) { flush(s); return false; }
-            learnGap(s, now);
+            if (list.size() < HISTORY_BATCH) ChatFlow.recordFromUi(list.size());
+            level = ChatFlow.level();
+            applyLevel(s, level, now);
+            // 過去ログの一括表示と激流はそのまま Twitch に渡す
+            if (list.size() >= HISTORY_BATCH || level >= ChatFlow.FLOOD || s.overload) { flush(s); return false; }
+            if (level == ChatFlow.NORMAL) learnGap(s, now);
         } catch (Throwable t) { fail("intercept failed", t); return false; }
 
         try {
-            enqueue(s, list, now);
+            if (level == ChatFlow.BUSY) enqueueChunk(s, list, now);
+            else enqueue(s, list, now);
             if (s.queue.size() > OVERLOAD_QUEUE) { enterOverload(s, now); flush(s); }
             else { ensureTick(s, now); }
         } catch (Throwable t) { fail("enqueue failed", t); flush(s); }
         return true;
     }
 
-    private static void updateRate(State s, long now, int count) {
-        if (s.windowStart == 0 || now - s.windowStart > 2000) {
-            if (s.windowStart != 0) s.rate = 0f;
-            s.windowStart = now; s.windowCount = count; return;
+    /** 流速メーターの段階に合わせる。混雑以上ではスクロール効果を止める */
+    private static void applyLevel(State s, int level, long now) {
+        if (level >= ChatFlow.BUSY) {
+            ChatSmoothScroll.setSuspended(true);
+        } else if (!s.overload) {
+            ChatSmoothScroll.setSuspended(false);
         }
-        s.windowCount += count;
-        long span = now - s.windowStart;
-        if (span >= 500) {
-            float inst = s.windowCount * 1000f / span;
-            s.rate = s.rate * 0.5f + inst * 0.5f;
-            s.windowStart = now; s.windowCount = 0;
+        if (s.overload && now >= s.overloadUntil && level == ChatFlow.NORMAL) {
+            s.overload = false; s.lateCount = 0;
+            ChatSmoothScroll.setSuspended(false);
+            Log.i(TAG, "overload off");
         }
     }
 
-    private static void updateOverload(State s, long now) {
-        if (s.overload) {
-            if (s.rate > OVERLOAD_EXIT_RATE) s.overloadUntil = now + OVERLOAD_HOLD_MS;
-            else if (now >= s.overloadUntil) {
-                s.overload = false; s.lateCount = 0;
-                ChatSmoothScroll.setSuspended(false);
-                Log.i(TAG, "overload off");
-            }
-        } else if (s.rate >= OVERLOAD_ENTER_RATE) { enterOverload(s, now); }
+    /** 混雑時: 次の 0.2 秒の区切りでまとめて流す */
+    private static void enqueueChunk(State s, List list, long now) {
+        long due = s.queue.isEmpty() ? now + BUSY_CHUNK_MS : Math.max(now, s.lastDue);
+        for (int i = 0; i < list.size(); i++) s.queue.addLast(new Item(list.get(i), due));
+        s.lastDue = due;
     }
 
     private static void enterOverload(State s, long now) {
-        if (!s.overload) Log.i(TAG, "overload on (rate=" + s.rate + ")");
+        if (!s.overload) Log.i(TAG, "overload on (queue=" + s.queue.size() + ")");
         s.overload = true; s.overloadUntil = now + OVERLOAD_HOLD_MS;
         ChatSmoothScroll.setSuspended(true);
     }

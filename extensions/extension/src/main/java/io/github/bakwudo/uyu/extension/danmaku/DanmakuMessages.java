@@ -23,6 +23,84 @@ final class DanmakuMessages {
     private DanmakuMessages() {
     }
 
+    // ===== 流速に応じた間引き（弾幕だけ。チャット欄のコメントは減らさない） =====
+    private static final long DUP_WINDOW_MS = 3000;
+    private static final int FLOOD_PER_SECOND = 10;
+    /** 最近流した本文 → 時刻（連投の判定用） */
+    private static final Map<String, Long> recentBodies = new LinkedHashMap<>(256, 0.75f, true) {
+        @Override
+        protected boolean removeEldestEntry(Map.Entry<String, Long> eldest) {
+            return size() > 500;
+        }
+    };
+    private static float floodTokens = FLOOD_PER_SECOND;
+    private static long floodRefillAt;
+
+    /**
+     * 混雑: 連投・スタンプだけのコメントを先に削り、全体を半分程度に。
+     * 激流: 同じく削ったうえで1秒あたり最大10件。
+     */
+    static synchronized List<?> thin(List<?> messages, int level) {
+        if (level <= 0 || messages.isEmpty()) return messages;
+        long now = android.os.SystemClock.uptimeMillis();
+        List<Object> good = new ArrayList<>(messages.size());
+        List<Object> weak = new ArrayList<>(); // スタンプだけ・連投
+        for (Object message : messages) {
+            String body = plainBody(message);
+            if (body == null) continue;
+            boolean emoteOnly = body.isEmpty();
+            boolean dup = false;
+            if (!emoteOnly) {
+                Long at = recentBodies.get(body);
+                dup = at != null && now - at < DUP_WINDOW_MS;
+                recentBodies.put(body, now);
+            }
+            if (emoteOnly || dup) weak.add(message); else good.add(message);
+        }
+
+        int budget;
+        if (level == 1) {
+            budget = Math.max(1, (messages.size() + 1) / 2);
+        } else {
+            if (floodRefillAt == 0) floodRefillAt = now;
+            floodTokens = Math.min(FLOOD_PER_SECOND, floodTokens + (now - floodRefillAt) * FLOOD_PER_SECOND / 1000f);
+            floodRefillAt = now;
+            budget = (int) floodTokens;
+            if (budget <= 0) return java.util.Collections.emptyList();
+        }
+
+        List<Object> out = new ArrayList<>(Math.min(budget, messages.size()));
+        pickEvenly(good, budget, out);
+        if (out.size() < budget) pickEvenly(weak, budget - out.size(), out);
+        if (level >= 2) floodTokens -= out.size();
+        return out;
+    }
+
+    /** 全体から均等に count 件取る（同じ時間帯に偏らないように） */
+    private static void pickEvenly(List<Object> from, int count, List<Object> out) {
+        int n = from.size();
+        if (count <= 0 || n == 0) return;
+        if (count >= n) { out.addAll(from); return; }
+        float step = n / (float) count;
+        for (int i = 0; i < count; i++) out.add(from.get(Math.min(n - 1, (int) (i * step))));
+    }
+
+    /** 文字の部分だけの本文。スタンプだけなら空文字、読めなければ null */
+    private static String plainBody(Object message) {
+        Object info = ChatMessages.messageInfo(message);
+        List<?> tokens = info == null ? null : ChatMessages.tokens(info);
+        if (tokens == null) return null;
+        StringBuilder sb = new StringBuilder();
+        for (Object token : tokens) {
+            if (ChatMessages.emoteTokenId(token) != null) continue;
+            String s = ChatMessages.textTokenText(token);
+            if (s == null) s = ChatMessages.mentionTokenText(token);
+            if (s == null) s = ChatMessages.urlTokenUrl(token);
+            if (s != null) sb.append(s);
+        }
+        return sb.toString().trim();
+    }
+
     /**
      * @param messages ChatLiveMessage objects.
      * @return Comments for the messages not seen before. Messages without text or emotes are
