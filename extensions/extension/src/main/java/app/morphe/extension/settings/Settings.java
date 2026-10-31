@@ -72,6 +72,14 @@ public final class Settings {
     public static final IntSetting DANMAKU_OPACITY =
             new IntSetting("danmaku_opacity", 100, 0, 100);
 
+    // 視聴ログ (Twitch視聴時間の記録).
+    public static final BooleanSetting WATCHLOG_ENABLED =
+            new BooleanSetting("watchlog_enabled", false);
+    public static final StringSetting WATCHLOG_SERVER_URL =
+            new StringSetting("watchlog_server_url", "");
+    public static final StringSetting WATCHLOG_API_KEY =
+            new StringSetting("watchlog_api_key", "");
+
     // Ads.
     public static final BooleanSetting BLOCK_ADS =
             new BooleanSetting("block_ads", true);

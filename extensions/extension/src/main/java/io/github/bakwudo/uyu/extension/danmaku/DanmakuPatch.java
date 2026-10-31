@@ -34,6 +34,7 @@ public final class DanmakuPatch {
     }
 
     public static void onPlayerStateChanged(Object playerViewDelegate, Enum<?> state) {
+        app.morphe.extension.watchlog.WatchTimeTracker.onPlayerState(state);
         try {
             if (state == null) return;
             String name = state.name();

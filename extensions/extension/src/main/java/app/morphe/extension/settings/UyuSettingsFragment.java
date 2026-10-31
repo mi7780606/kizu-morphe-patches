@@ -33,6 +33,7 @@ public class UyuSettingsFragment extends PreferenceFragment {
     static final String SECTION_PRIVACY = "privacy";
     static final String SECTION_HOME = "home";
     static final String SECTION_PLAYER = "player";
+    static final String SECTION_WATCHLOG = "watchlog";
     private static final String ARG_SECTION = "section";
     private static final String[] WEIGHT_NAMES = {
             "Thin", "Extra light", "Light", "Regular", "Medium", "Semi bold", "Bold", "Extra bold", "Black",
@@ -100,6 +101,7 @@ public class UyuSettingsFragment extends PreferenceFragment {
             else if (section.equals(SECTION_PRIVACY)) addPrivacySettings(screen);
             else if (section.equals(SECTION_HOME)) addHomeSettings(screen);
             else if (section.equals(SECTION_PLAYER)) addPlayerSettings(screen);
+            else if (section.equals(SECTION_WATCHLOG)) addWatchLogSettings(screen);
         } catch (Throwable error) {
             Utils.logError("Failed to build Kizu settings screen (section=" + section + ")", error);
             try {
@@ -133,6 +135,7 @@ public class UyuSettingsFragment extends PreferenceFragment {
         addSectionLink(screen, SECTION_HOME, "Home & navigation controls");
         addSectionLink(screen, SECTION_PLAYER, "Player Controls");
         addSectionLink(screen, SECTION_PRIVACY, "Privacy");
+        addSectionLink(screen, SECTION_WATCHLOG, "見たチャンネルと時間を視聴ログに記録");
         addBackupLinks(screen);
     }
 
@@ -485,8 +488,25 @@ public class UyuSettingsFragment extends PreferenceFragment {
             case SECTION_PRIVACY: return "Privacy";
             case SECTION_HOME: return "Home & navigation";
             case SECTION_PLAYER: return "Player Controls";
+            case SECTION_WATCHLOG: return "視聴ログ";
             default: return SettingsPatch.TITLE;
         }
+    }
+
+    private void addWatchLogSettings(PreferenceScreen screen) {
+        addSwitch(screen, Settings.WATCHLOG_ENABLED, "視聴時間を記録",
+                "再生中のチャンネルと時間を1分ごとに視聴ログへ送ります。");
+        Preference url = new TextPreference(SettingsUi.preferenceContext(screen.getContext()), Settings.WATCHLOG_SERVER_URL,
+                "https://watchlog.example.workers.dev", "未設定");
+        url.setTitle("サーバーURL");
+        screen.addPreference(url);
+        Preference key = new SecretTextPreference(SettingsUi.preferenceContext(screen.getContext()), Settings.WATCHLOG_API_KEY);
+        key.setTitle("APIキー");
+        screen.addPreference(key);
+        Preference note = new Preference(screen.getContext());
+        note.setSummary("送るのはチャンネル名・秒数・端末名だけです。通信できないときは最大6時間分まで溜めて再送します。設定のエクスポートにはAPIキーも含まれるので、ファイルの扱いに注意してください。");
+        note.setSelectable(false);
+        screen.addPreference(note);
     }
 
     private void addSwitch(PreferenceGroup group, BooleanSetting setting, String title, String summary) {

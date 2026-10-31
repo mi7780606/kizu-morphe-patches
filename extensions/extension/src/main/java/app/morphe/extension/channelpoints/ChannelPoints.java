@@ -123,6 +123,7 @@ public final class ChannelPoints {
 
     /** Called by the existing stable ChannelChatConnectionKey(String,String) hook. */
     public static void onChannelChanged(String id, String login) {
+        app.morphe.extension.watchlog.WatchTimeTracker.onChannelChanged(id, login);
         String newId = normalize(id);
         String newLogin = normalize(login);
         if (newId == null && newLogin == null) return;

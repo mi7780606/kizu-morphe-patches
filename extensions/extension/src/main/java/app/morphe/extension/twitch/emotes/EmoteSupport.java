@@ -100,6 +100,7 @@ public final class EmoteSupport {
     // Patched into Twitch's ChannelChatConnectionKey constructor. That constructor has no handler of
     // its own, so a throw here would abort chat-connection setup; never let anything escape. (#196)
     public static void onChannelChanged(String channelId, String channelName) {
+        app.morphe.extension.watchlog.WatchTimeTracker.onChannelChanged(channelId, channelName);
         try {
             String normalized = normalizeChannelId(channelId);
             if (normalized != null) {
