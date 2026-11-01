@@ -94,7 +94,6 @@ public final class Utils {
         EmoteSupport.init(appContext);
         ChannelPoints.start(appContext);
         try { PredictionBetter.start(appContext); } catch (Throwable ignored) {}
-        try { MemoryWatch.start(); } catch (Throwable ignored) {}
         try {
             Context applicationContext = appContext == null ? null : appContext.getApplicationContext();
             if (applicationContext instanceof Application) {

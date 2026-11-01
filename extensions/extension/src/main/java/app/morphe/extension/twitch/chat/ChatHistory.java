@@ -208,26 +208,6 @@ public final class ChatHistory {
         }
     }
 
-    /** メモリ確認用: "ユーザー数/件数" */
-    public static String stats() {
-        synchronized (LOCK) { return USERS.size() + "人/" + total + "件"; }
-    }
-
-    /** メモリが足りないときに古い人から半分捨てる */
-    public static void trimForMemory() {
-        synchronized (LOCK) {
-            int target = USERS.size() / 2;
-            Iterator<Map.Entry<String, User>> it = USERS.entrySet().iterator();
-            while (USERS.size() > target && it.hasNext()) {
-                User old = it.next().getValue();
-                total -= old.entries.size();
-                if (old.display != null) BY_DISPLAY.remove(old.display.toLowerCase(Locale.ROOT));
-                it.remove();
-            }
-            SEEN_IDS.clear();
-        }
-    }
-
     // ===================== チャット欄への取り付け =====================
 
     public static void attach(View list) {

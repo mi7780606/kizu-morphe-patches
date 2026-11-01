@@ -153,35 +153,14 @@ public final class KizuUiTweaks {
             EditText points = number(c, String.valueOf(KizuSettings.PREDICTION_POINTS.get()));
             box.addView(points);
 
-            TextView note = label(c, d, "予想が始まると、10秒以内に自動で賭けます。番号が選択肢の数より大きいときは一番下に賭けます。「今すぐ賭ける」は自動参加がオフでも、進行中の予想に1回だけ賭けます。");
+            TextView note = label(c, d, "予想が始まると、10秒以内に自動で賭けます。番号が選択肢の数より大きいときは一番下に賭けます。");
             note.setTextSize(TypedValue.COMPLEX_UNIT_SP, 12);
             box.addView(note);
 
-            String log = app.morphe.extension.channelpoints.CpLog.read();
-            TextView logTitle = label(c, d, "最近の結果（新しい順）");
-            box.addView(logTitle);
-            TextView logView = label(c, d, log.isEmpty() ? "まだ記録はありません" : firstLines(log, 6));
-            logView.setTextSize(TypedValue.COMPLEX_UNIT_SP, 11);
-            logView.setTextIsSelectable(true);
-            logView.setPadding(0, (int) (4 * d), 0, (int) (8 * d));
-            box.addView(logView);
-
-            android.widget.ScrollView scroll = new android.widget.ScrollView(c);
-            scroll.addView(box);
-
             new AlertDialog.Builder(c, android.R.style.Theme_Material_Dialog_Alert)
                     .setTitle("予想の自動参加")
-                    .setView(scroll)
+                    .setView(box)
                     .setNegativeButton("キャンセル", null)
-                    .setNeutralButton("今すぐ賭ける", (dialog, which) -> {
-                        KizuSettings.PREDICTION_OUTCOME.save(clamp(outcome, 1, 10, 1));
-                        KizuSettings.PREDICTION_POINTS.save(clamp(points, 1, 250000, 100));
-                        app.morphe.extension.channelpoints.PredictionBetter.runNow();
-                        try {
-                            android.widget.Toast.makeText(c, "確認しています。結果はもう一度「予想」を開くと見られます",
-                                    android.widget.Toast.LENGTH_LONG).show();
-                        } catch (Throwable ignored) {}
-                    })
                     .setPositiveButton("保存", (dialog, which) -> {
                         KizuSettings.PREDICTION_AUTO.save(auto.isChecked());
                         KizuSettings.PREDICTION_OUTCOME.save(clamp(outcome, 1, 10, 1));
@@ -191,18 +170,6 @@ public final class KizuUiTweaks {
         } catch (Throwable t) {
             Log.e(TAG, "dialog failed", t);
         }
-    }
-
-    private static String firstLines(String s, int n) {
-        StringBuilder sb = new StringBuilder();
-        int count = 0;
-        for (String l : s.split("\n")) {
-            if (l.isEmpty()) continue;
-            if (count++ >= n) break;
-            if (sb.length() > 0) sb.append('\n');
-            sb.append(l);
-        }
-        return sb.toString();
     }
 
     private static TextView label(Context c, float d, String s) {

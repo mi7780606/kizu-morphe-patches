@@ -97,6 +97,8 @@ public class KizuExtraSettingsFragment extends PreferenceFragment {
                     "あなたにおすすめのチャンネル",
                     "フォロー中で「ライブ」を選んだとき、一番上におすすめの配信を4件表示します。");
             addNgWords(screen);
+            addNumber(screen, "弾幕で長文を流さない", "この文字数より長いコメントは弾幕に流しません（チャット欄には残ります）。スタンプは1個1文字、0で制限なし（0〜200）",
+                    KizuSettings.DANMAKU_MAX_LENGTH.key, KizuSettings.DANMAKU_MAX_LENGTH.defaultValue, 0, 200);
             addNumber(screen, "混雑とみなす流速", "毎秒このコメント数以上で、スクロール効果を止めて弾幕を半分程度に間引きます（5〜500）",
                     KizuSettings.FLOW_BUSY_RATE.key, KizuSettings.FLOW_BUSY_RATE.defaultValue, 5, 500);
             addNumber(screen, "激流とみなす流速", "毎秒このコメント数以上で、1件ずつ流すのを止めて弾幕を1秒10件までにします（10〜1000）",

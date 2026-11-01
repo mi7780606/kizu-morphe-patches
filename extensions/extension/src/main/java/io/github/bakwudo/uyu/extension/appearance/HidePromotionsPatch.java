@@ -100,17 +100,13 @@ public final class HidePromotionsPatch {
         if (hasFollowingTurboTarget(root)) return;
         ViewTreeObserver observer = root.getViewTreeObserver();
         if (!observer.isAlive()) return;
-        // 値(リスナー)からキー(root)を強く参照するとリークするので弱参照で持つ
-        final java.lang.ref.WeakReference<View> rootRef = new java.lang.ref.WeakReference<>(root);
         ViewTreeObserver.OnGlobalLayoutListener listener = () -> {
-            View r = rootRef.get();
-            if (r == null) return;
-            attachFollowingTurboViews(r);
-            if (hasFollowingTurboTarget(r)) removeFollowingTurboScan(r);
+            attachFollowingTurboViews(root);
+            if (hasFollowingTurboTarget(root)) removeFollowingTurboScan(root);
         };
         TURBO_LAYOUT_LISTENERS.put(root, listener);
         observer.addOnGlobalLayoutListener(listener);
-        root.postDelayed(() -> { View r = rootRef.get(); if (r != null) removeFollowingTurboScan(r); }, 15000);
+        root.postDelayed(() -> removeFollowingTurboScan(root), 15000);
     }
 
     private static void attachFollowingTurboViews(View root) {

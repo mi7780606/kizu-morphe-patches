@@ -130,8 +130,6 @@ public class UyuSettingsFragment extends PreferenceFragment {
                 "チャンネルポイント自動獲得時のメッセージを出しません。自動獲得は続きます。");
         addSwitch(screen, KizuSettings.DANMAKU_QUICK_SETTINGS, "弾幕の設定ボタン",
                 "プレイヤー右上に弾幕のクイック設定ボタンを表示します。");
-        addSlider(screen, KizuSettings.DANMAKU_MAX_LENGTH, 5, "弾幕で長文を流さない",
-                value -> value == 0 ? "制限なし（左端）" : value + "文字より長いコメントは弾幕に流しません（スタンプは1個1文字）。チャット欄には残ります。");
         addSwitch(screen, KizuSettings.DEBUG_MESSAGES, "確認用メッセージ",
                 "過去コメント機能の動作確認用メッセージを表示します。");
         Preference note = new Preference(screen.getContext());
