@@ -32,6 +32,13 @@ private const val CHAT_INPUT = "Li76;"
 private const val COMMUNITY_POINTS = "Ltb9;"
 // en9 = チャンネルポイントの報酬一覧 (reward_layout_container)
 private const val REWARDS = "Len9;"
+// Twitch 本体の Client-Integrity トークン管理（クラス名は難読化されていない）
+private const val INTEGRITY_MANAGER = "Ltv/twitch/android/network/clientintegrity/a;"
+private const val INTEGRITY_BRIDGE = "Lapp/morphe/extension/channelpoints/IntegrityBridge;"
+// gb9 = チャンネルポイント画面の presenter。eb9 = 画面状態ごとの処理、cb9 = イベントとエラー時の処理
+private val CP_PANEL_LAMBDAS = listOf("Leb9;", "Lcb9;")
+private const val CP_PANEL_PRESENTER = "Lgb9;"
+private const val CP_PANEL_LOG = "Lapp/morphe/extension/channelpoints/CpPanelLog;"
 
 @Suppress("unused")
 val kizuHooksPatch = bytecodePatch(
@@ -59,6 +66,34 @@ val kizuHooksPatch = bytecodePatch(
         hookConstructor(CHAT_INPUT, "onChatInputCreated")
         hookConstructor(COMMUNITY_POINTS, "onCommunityPointsCreated")
         hookConstructor(REWARDS, "onRewardsCreated")
+
+        // 予想の自動参加で本体と同じ Client-Integrity を付けるため、トークン管理を受け取る
+        try {
+            val def = classDefByOrNull(INTEGRITY_MANAGER) ?: throw PatchException("integrity manager not found")
+            val ctor = mutableClassDefBy(def).methods.singleOrNull { it.name == "<init>" }
+                ?: throw PatchException("one constructor expected in integrity manager")
+            ctor.instructions.withIndex().filter { it.value.opcode == Opcode.RETURN_VOID }
+                .map { it.index }.sortedDescending().forEach { i ->
+                    ctor.addInstruction(i, "invoke-static {p0}, $INTEGRITY_BRIDGE->onManager(Ljava/lang/Object;)V")
+                }
+        } catch (e: Exception) {
+            println("Kizu hooks: integrity hook skipped: ${e.message}")
+        }
+
+        // チャンネルポイント画面の状態とエラーを記録する（動作は変えない）
+        for (type in CP_PANEL_LAMBDAS) {
+            try {
+                val def = classDefByOrNull(type) ?: throw PatchException("$type not found")
+                if (def.fields.none { it.type == CP_PANEL_PRESENTER }) throw PatchException("$type is not the CP panel lambda")
+                val invoke = mutableClassDefBy(def).methods.singleOrNull {
+                    it.name == "invoke" && it.returnType == "Ljava/lang/Object;" &&
+                        it.parameterTypes.map { t -> t.toString() } == listOf("Ljava/lang/Object;")
+                } ?: throw PatchException("$type.invoke not found")
+                invoke.addInstruction(0, "invoke-static {p0, p1}, $CP_PANEL_LOG->onEvent(Ljava/lang/Object;Ljava/lang/Object;)V")
+            } catch (e: Exception) {
+                println("Kizu hooks: CP panel log skipped for $type: ${e.message}")
+            }
+        }
 
         // ハイプトレイン非表示: 削除イベント以外を入口で捨てる。失敗してもほかのフックは生かす。
         try {

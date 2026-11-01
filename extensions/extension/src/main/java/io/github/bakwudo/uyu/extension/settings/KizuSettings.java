@@ -47,5 +47,9 @@ public final class KizuSettings {
     public static final IntSetting FLOW_FLOOD_RATE =
             new IntSetting("kizu_flow_flood_rate", 80, 10, 1000);
 
+    /** 弾幕に流す最大文字数（スタンプは1個1文字）。0で制限なし。チャット欄には影響しない */
+    public static final IntSetting DANMAKU_MAX_LENGTH =
+            new IntSetting("kizu_danmaku_max_length", 30, 0, 200);
+
     private KizuSettings() {}
 }

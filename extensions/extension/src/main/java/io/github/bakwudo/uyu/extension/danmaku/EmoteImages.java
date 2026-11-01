@@ -21,7 +21,7 @@ import io.github.bakwudo.uyu.extension.Utils;
  * Downloads and caches Twitch emote images. Danmaku comments are redrawn every frame while they
  * move, so an image that finishes loading shows up on the next frame without a callback.
  */
-final class EmoteImages {
+public final class EmoteImages {
     /** Images per emote in the v1 CDN: 1.0 is 28 px, 2.0 is 56 px and 3.0 is 112 px. */
     private static final String URL_FORMAT = "https://static-cdn.jtvnw.net/emoticons/v1/%s/%s";
     private static final long RETRY_DELAY_MS = 60_000;
@@ -37,6 +37,15 @@ final class EmoteImages {
     private static final ExecutorService executor = Executors.newFixedThreadPool(2);
 
     private EmoteImages() {
+    }
+
+    /** メモリが足りないときに画像キャッシュを空にする */
+    public static void trimForMemory() {
+        try { cache.evictAll(); } catch (Throwable ignored) {}
+    }
+
+    public static String stats() {
+        return (cache.size() >> 10) + "KB";
     }
 
     /**

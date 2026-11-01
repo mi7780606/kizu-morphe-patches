@@ -79,14 +79,17 @@ public final class PlayerOverlaySupport {
             implements ViewTreeObserver.OnPreDrawListener,
                        ViewTreeObserver.OnGlobalLayoutListener,
                        View.OnAttachStateChangeListener {
-        private final View view;
+        // WeakHashMap の値からキー(View)を強く参照すると View が解放されずメモリリークになるため弱参照
+        private final java.lang.ref.WeakReference<View> viewRef;
         private ViewTreeObserver observer;
 
         private ClipVisibilityGuard(View view) {
-            this.view = view;
+            this.viewRef = new java.lang.ref.WeakReference<>(view);
         }
 
         void attach() {
+            View view = viewRef.get();
+            if (view == null) return;
             try {
                 ViewTreeObserver next = view.getViewTreeObserver();
                 if (!next.isAlive()) return;
@@ -123,12 +126,16 @@ public final class PlayerOverlaySupport {
 
         @Override
         public boolean onPreDraw() {
+            View view = viewRef.get();
+            if (view == null) { detachObserver(); return true; }
             apply(view);
             return true;
         }
 
         @Override
         public void onGlobalLayout() {
+            View view = viewRef.get();
+            if (view == null) { detachObserver(); return; }
             apply(view);
         }
     }

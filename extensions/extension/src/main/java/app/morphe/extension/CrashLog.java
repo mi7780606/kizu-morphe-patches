@@ -58,6 +58,10 @@ public final class CrashLog {
         try {
             pw.println("chat flow: level " + ChatFlow.level() + ", " + Math.round(ChatFlow.rate()) + " msg/s");
         } catch (Throwable ignored) {}
+        try {
+            String mem = MemoryWatch.summary();
+            if (!mem.isEmpty()) pw.println("memory history (新しい順):\n" + mem.trim());
+        } catch (Throwable ignored) {}
         error.printStackTrace(pw);
         pw.println();
         pw.flush();

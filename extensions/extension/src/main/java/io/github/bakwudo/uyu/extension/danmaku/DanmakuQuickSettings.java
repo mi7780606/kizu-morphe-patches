@@ -112,6 +112,8 @@ final class DanmakuQuickSettings {
                 p -> 10 + p * 5, v -> (v - 10) / 5, v -> v + "件");
         addSlider(list, d, "縁取りの太さ", Settings.DANMAKU_OUTLINE_WIDTH, 30,
                 p -> p, v -> v, String::valueOf);
+        addSlider(list, d, "長文を流さない（左端でオフ）", io.github.bakwudo.uyu.extension.settings.KizuSettings.DANMAKU_MAX_LENGTH, 40,
+                p -> p * 5, v -> v / 5, v -> v == 0 ? "制限なし" : v + "文字まで");
 
         ScrollView scroll = new ScrollView(c);
         scroll.addView(list);

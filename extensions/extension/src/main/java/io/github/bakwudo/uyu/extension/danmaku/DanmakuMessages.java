@@ -108,6 +108,9 @@ final class DanmakuMessages {
      */
     static List<DanmakuComment> toComments(List<?> messages) {
         List<DanmakuComment> comments = new ArrayList<>(messages.size());
+        int maxLength = 0;
+        try { maxLength = io.github.bakwudo.uyu.extension.settings.KizuSettings.DANMAKU_MAX_LENGTH.get(); }
+        catch (Throwable ignored) {}
         for (Object message : messages) {
             String id = ChatMessages.messageId(message);
             if (id != null) {
@@ -119,7 +122,10 @@ final class DanmakuMessages {
             Object info = ChatMessages.messageInfo(message);
             List<?> tokens = info == null ? null : ChatMessages.tokens(info);
             DanmakuComment comment = tokens == null ? null : toComment(tokens);
-            if (comment != null) comments.add(comment);
+            if (comment == null) continue;
+            // 長文は弾幕にだけ流さない（チャット欄・過去コメントには残る）
+            if (maxLength > 0 && length(comment) > maxLength) continue;
+            comments.add(comment);
         }
         return comments;
     }
@@ -151,6 +157,16 @@ final class DanmakuMessages {
 
         trimEnds(parts);
         return parts.isEmpty() ? null : new DanmakuComment(parts.toArray());
+    }
+
+    /** 文字数。スタンプは1個を1文字として数える */
+    private static int length(DanmakuComment comment) {
+        int n = 0;
+        for (Object part : comment.parts) {
+            if (part instanceof String str) n += str.codePointCount(0, str.length());
+            else n += 1;
+        }
+        return n;
     }
 
     private static void addText(List<Object> parts, StringBuilder text) {
