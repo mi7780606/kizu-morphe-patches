@@ -66,6 +66,8 @@ public final class EmoteSupport {
                 public void onViewDetachedFromWindow(View view) {
                     try {
                         stopAnimations(((TextView) view).getText());
+                        // 画面(Activity)が終了済みなら保持をやめる。値の Span が TextView を参照し続け、画面ごと解放されなくなるため
+                        if (isScreenGone(view)) forget((TextView) view);
                     } catch (Throwable ignored) {
                     }
                 }
@@ -318,6 +320,16 @@ public final class EmoteSupport {
         } catch (Throwable ignored) {
             forget(textView);
         }
+    }
+
+    private static boolean isScreenGone(View view) {
+        android.content.Context c = view.getContext();
+        while (c instanceof android.content.ContextWrapper && !(c instanceof android.app.Activity)) {
+            c = ((android.content.ContextWrapper) c).getBaseContext();
+        }
+        if (!(c instanceof android.app.Activity)) return false;
+        android.app.Activity a = (android.app.Activity) c;
+        return a.isFinishing() || a.isDestroyed() || a.isChangingConfigurations();
     }
 
     private static void forget(TextView textView) {

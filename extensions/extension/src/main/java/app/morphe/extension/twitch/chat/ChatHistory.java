@@ -61,7 +61,7 @@ public final class ChatHistory {
     public static final boolean ENABLED = true;
     private static final int MAX_PER_USER = 100;
     private static final int MAX_USERS = 3000;
-    private static final int MAX_TOTAL = 20000;
+    private static final int MAX_TOTAL = 5000;
     private static final int MAX_SEEN_IDS = 5000;
     private static final int MAX_TEXT = 500;
     private static final long TAP_TIMEOUT_MS = 400;
@@ -108,7 +108,8 @@ public final class ChatHistory {
 
     private static final Set<View> LISTS = Collections.newSetFromMap(new WeakHashMap<View, Boolean>());
     /** 行の TextView → 最後に見た文字列。文字が変わった（再利用された）行だけ処理する */
-    private static final Map<TextView, CharSequence> LAST_TEXT = new WeakHashMap<>();
+    // 値に CharSequence を持つと Span/Drawable の callback 経由でキー(TextView)を強参照し、画面ごと解放されなくなる → 識別ハッシュだけ持つ
+    private static final Map<TextView, Integer> LAST_TEXT = new WeakHashMap<>();
     private static boolean broken;
     private static int toasts;
     private static int slop = -1;
@@ -244,8 +245,9 @@ public final class ChatHistory {
                     TextView tv = rowText(list.getChildAt(i), 0);
                     if (tv == null) continue;
                     CharSequence text = tv.getText();
-                    if (LAST_TEXT.get(tv) == text) continue; // 変化なし → 何もしない
-                    LAST_TEXT.put(tv, text);
+                    Integer h = System.identityHashCode(text);
+                    if (h.equals(LAST_TEXT.get(tv))) continue; // 変化なし → 何もしない
+                    LAST_TEXT.put(tv, h);
                     install(tv);
                     if (!dataHookAlive) recordFromView(text);
                 }
