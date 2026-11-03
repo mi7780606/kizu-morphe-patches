@@ -35,6 +35,7 @@ final class DanmakuOverlay {
     private final DanmakuToggleIcon icon;
     private final ImageView settingsButton;
     private final ImageView chatButton;
+    private final ImageView betButton;
     private final DanmakuQuickSettings quickSettings;
     private final Rect rect = new Rect();
     private final Rect buttonRect = new Rect();
@@ -104,6 +105,24 @@ final class DanmakuOverlay {
         chatButton.setTranslationZ(1);
         chatButton.setOutlineProvider(null);
         controls.addView(chatButton, new FrameLayout.LayoutParams(0, 0, Gravity.TOP | Gravity.RIGHT));
+
+        // Kizu: 予想に手動で賭ける画面を開くボタン
+        betButton = new ImageView(context);
+        int betIcon = Utils.getResourceId(context, "ic_prediction_event", "drawable");
+        if (betIcon != 0) betButton.setImageResource(betIcon);
+        betButton.setScaleType(ImageView.ScaleType.FIT_CENTER);
+        betButton.setContentDescription("予想に賭ける");
+        betButton.setVisibility(View.INVISIBLE);
+        betButton.setOnClickListener(v -> {
+            try {
+                app.morphe.extension.channelpoints.TvBet.open(v.getContext());
+            } catch (Throwable t) {
+                Utils.logError("Kizu: bet failed", t);
+            }
+        });
+        betButton.setTranslationZ(1);
+        betButton.setOutlineProvider(null);
+        controls.addView(betButton, new FrameLayout.LayoutParams(0, 0, Gravity.TOP | Gravity.RIGHT));
 
         player.addOnLayoutChangeListener((v, l, t, r, b, ol, ot, or, ob) -> update());
         video.addOnLayoutChangeListener((v, l, t, r, b, ol, ot, or, ob) -> update());
@@ -208,6 +227,7 @@ final class DanmakuOverlay {
         button.setVisibility(visible ? View.VISIBLE : View.INVISIBLE);
         settingsButton.setVisibility(visible ? View.VISIBLE : View.INVISIBLE);
         chatButton.setVisibility(controlsShown ? View.VISIBLE : View.INVISIBLE);
+        betButton.setVisibility(controlsShown ? View.VISIBLE : View.INVISIBLE);
 
         if (!controlsShown) return;
 
@@ -229,6 +249,7 @@ final class DanmakuOverlay {
         layoutButton(button, template, size, rightMargin);
         layoutButton(settingsButton, template, size, rightMargin + size);
         layoutButton(chatButton, template, size, rightMargin + size * 2);
+        layoutButton(betButton, template, size, rightMargin + size * 3);
     }
 
     private static void layoutButton(ImageView target, View template, int size, int rightMargin) {
