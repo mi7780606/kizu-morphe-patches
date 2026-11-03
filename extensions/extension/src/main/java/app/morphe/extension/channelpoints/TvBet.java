@@ -1,5 +1,6 @@
 package app.morphe.extension.channelpoints;
 
+import android.app.Activity;
 import android.app.AlertDialog;
 import android.app.Dialog;
 import android.graphics.drawable.ColorDrawable;
@@ -7,6 +8,7 @@ import android.graphics.drawable.GradientDrawable;
 import android.text.Editable;
 import android.text.TextWatcher;
 import android.view.Gravity;
+import android.view.ViewGroup;
 import android.view.Window;
 import android.view.WindowManager;
 import android.widget.ImageView;
@@ -243,7 +245,6 @@ public final class TvBet {
     private static void load(Context c) {
         String channelId = ChannelPoints.currentChannelId();
         if (channelId == null) { info(c, "予想", "配信を開いてから押してください。"); return; }
-        Toast.makeText(c, "予想を読み込み中…", Toast.LENGTH_SHORT).show();
         new Thread(() -> {
             State st = fetchState(channelId);
             MAIN.post(() -> {
@@ -295,7 +296,7 @@ public final class TvBet {
         root.setOrientation(LinearLayout.VERTICAL);
         int pad = (int) (16 * d);
         root.setPadding(pad, pad, pad, pad);
-        root.setBackground(round(BG, 12 * d, 0, 0));
+        root.setBackgroundColor(BG);
 
         LinearLayout top = new LinearLayout(c);
         top.setOrientation(LinearLayout.HORIZONTAL);
@@ -338,23 +339,16 @@ public final class TvBet {
 
         TextView logout = label(c, "Kizu用ログインを解除", 11, 0xFF6E6E78, false);
         logout.setPadding(0, (int) (10 * d), 0, 0);
-        logout.setOnClickListener(v -> { KizuSettings.TV_TOKEN.save(""); dlg.dismiss(); Toast.makeText(c, "ログインを解除しました", Toast.LENGTH_SHORT).show(); });
+        logout.setOnClickListener(v -> { KizuSettings.TV_TOKEN.save(""); dlg.dismiss(); });
         root.addView(logout);
 
         ScrollView sv = new ScrollView(c);
-        sv.addView(root);
+        sv.setFillViewport(true);
+        sv.addView(root, new ViewGroup.LayoutParams(-1, -2));
         dlg.setContentView(sv);
-        Window w = dlg.getWindow();
-        if (w != null) {
-            w.setBackgroundDrawable(new ColorDrawable(Color.TRANSPARENT));
-            int width = Math.min((int) (c.getResources().getDisplayMetrics().widthPixels * 0.94f), (int) (480 * d));
-            w.setLayout(width, WindowManager.LayoutParams.WRAP_CONTENT);
-        }
+        placeOverChat(dlg, c, sv, root, d);
         dlg.show();
-        if (w != null) {
-            int width = Math.min((int) (c.getResources().getDisplayMetrics().widthPixels * 0.94f), (int) (480 * d));
-            w.setLayout(width, WindowManager.LayoutParams.WRAP_CONTENT);
-        }
+        placeOverChat(dlg, c, sv, root, d);
     }
 
     private static void buildEvent(Context c, float d, Dialog dlg, LinearLayout root, State st, JSONObject ev) {
@@ -502,6 +496,7 @@ public final class TvBet {
                 cards[i].setBackground(round(CARD, 8 * d, (int) (2 * d), i == selected[0] ? col : CARD));
             }
             int s = selected[0];
+            expect.setTextColor(SUB);
             if (s < 0) { expect.setText(""); return; }
             JSONObject o = outs.optJSONObject(s);
             int col = colorOf(o, s);
@@ -538,10 +533,10 @@ public final class TvBet {
         final String eventId = ev.optString("id");
         betBtn.setOnClickListener(v -> {
             int s = selected[0];
-            if (s < 0) { Toast.makeText(c, "選択肢をタップして選んでください", Toast.LENGTH_SHORT).show(); return; }
+            if (s < 0) { expect.setTextColor(0xFFEB0400); expect.setText("選択肢をタップして選んでください"); return; }
             int p;
             try { p = Integer.parseInt(pts.getText().toString().trim()); } catch (Throwable t) { p = 0; }
-            if (p < 1) { Toast.makeText(c, "ポイントを入れてください", Toast.LENGTH_SHORT).show(); return; }
+            if (p < 1) { expect.setTextColor(0xFFEB0400); expect.setText("ポイントを入れてください"); return; }
             if (st.balance >= 0 && p > st.balance) p = st.balance;
             final int fp = p;
             final String outcomeId = outs.optJSONObject(s).optString("id");
@@ -551,7 +546,6 @@ public final class TvBet {
                 String[] result = bet(eventId, outcomeId, fp);
                 MAIN.post(() -> {
                     if ("ok".equals(result[0])) {
-                        Toast.makeText(c, result[1], Toast.LENGTH_SHORT).show();
                         watch(c.getApplicationContext(), st.channelId, eventId);
                         try { dlg.dismiss(); } catch (Throwable ignored) {}
                         load(c);
@@ -584,7 +578,7 @@ public final class TvBet {
         root.setOrientation(LinearLayout.VERTICAL);
         int pad = (int) (16 * d);
         root.setPadding(pad, pad, pad, pad);
-        root.setBackground(round(BG, 12 * d, 0, 0));
+        root.setBackgroundColor(BG);
 
         LinearLayout top = new LinearLayout(c);
         top.setGravity(Gravity.CENTER_VERTICAL);
@@ -653,15 +647,50 @@ public final class TvBet {
         }
 
         ScrollView sv = new ScrollView(c);
-        sv.addView(root);
+        sv.setFillViewport(true);
+        sv.addView(root, new ViewGroup.LayoutParams(-1, -2));
         dlg.setContentView(sv);
-        Window w = dlg.getWindow();
-        if (w != null) w.setBackgroundDrawable(new ColorDrawable(Color.TRANSPARENT));
+        placeOverChat(dlg, c, sv, root, d);
         dlg.show();
-        if (w != null) {
-            int width = Math.min((int) (c.getResources().getDisplayMetrics().widthPixels * 0.94f), (int) (480 * d));
-            w.setLayout(width, WindowManager.LayoutParams.WRAP_CONTENT);
+        placeOverChat(dlg, c, sv, root, d);
+    }
+
+    /** プレイヤーの下（コメント欄の位置）にだけ重ねる。プレイヤーが見つからなければ画面下60%。 */
+    private static void placeOverChat(Dialog dlg, Context c, ScrollView sv, LinearLayout root, float d) {
+        Window w = dlg.getWindow();
+        if (w == null) return;
+        w.setBackgroundDrawable(new ColorDrawable(Color.TRANSPARENT));
+        w.clearFlags(WindowManager.LayoutParams.FLAG_DIM_BEHIND);
+        android.util.DisplayMetrics dm = c.getResources().getDisplayMetrics();
+        int screenH = dm.heightPixels;
+        int top = -1;
+        Activity a = activity(c);
+        if (a != null) {
+            int id = a.getResources().getIdentifier("player_overlay_container", "id", a.getPackageName());
+            View player = id != 0 ? a.findViewById(id) : null;
+            if (player != null && player.isShown() && player.getHeight() > 0) {
+                int[] loc = new int[2];
+                player.getLocationOnScreen(loc);
+                top = loc[1] + player.getHeight();
+            }
+            android.graphics.Rect frame = new android.graphics.Rect();
+            a.getWindow().getDecorView().getWindowVisibleDisplayFrame(frame);
+            if (frame.bottom > 0) screenH = frame.bottom;
         }
+        int h = top > 0 && top < screenH * 0.8f ? screenH - top : (int) (screenH * 0.6f);
+        boolean landscape = dm.widthPixels > dm.heightPixels;
+        int width = landscape ? Math.min(dm.widthPixels, (int) (420 * d)) : WindowManager.LayoutParams.MATCH_PARENT;
+        w.setGravity(Gravity.BOTTOM | (landscape ? Gravity.RIGHT : Gravity.CENTER_HORIZONTAL));
+        w.getDecorView().setPadding(0, 0, 0, 0);
+        w.setLayout(width, h);
+    }
+
+    private static Activity activity(Context c) {
+        while (c instanceof android.content.ContextWrapper) {
+            if (c instanceof Activity) return (Activity) c;
+            c = ((android.content.ContextWrapper) c).getBaseContext();
+        }
+        return null;
     }
 
     private static String sign(long v) {
