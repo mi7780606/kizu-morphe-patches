@@ -104,6 +104,7 @@ public class KizuExtraSettingsFragment extends PreferenceFragment {
             addNumber(screen, "激流とみなす流速", "毎秒このコメント数以上で、1件ずつ流すのを止めて弾幕を1秒10件までにします（10〜1000）",
                     KizuSettings.FLOW_FLOOD_RATE.key, KizuSettings.FLOW_FLOOD_RATE.defaultValue, 10, 1000);
             addCrashLog(screen);
+            addManualBet(screen);
             addSwitch(screen, KizuSettings.PREDICTION_AUTO.key, KizuSettings.PREDICTION_AUTO.defaultValue,
                     "予想に自動で参加",
                     "予想が始まったら、指定の番号とポイントで自動で賭けます。チャンネルポイント画面の「予想」ボタンからも設定できます。");
@@ -118,6 +119,18 @@ public class KizuExtraSettingsFragment extends PreferenceFragment {
         } catch (Throwable t) {
             Log.e(TAG, "build failed", t);
         }
+    }
+
+    private void addManualBet(PreferenceScreen screen) {
+        Preference p = new Preference(SettingsUi.preferenceContext(screen.getContext()));
+        p.setTitle("予想に手動で賭ける");
+        p.setSummary("配信を見ている間に開くと、今の予想に賭けられます。初回はKizu用ログイン（コードを twitch.tv/activate で入力）が出ます。");
+        p.setOnPreferenceClickListener(clicked -> {
+            android.app.Activity a = getActivity();
+            if (a != null) app.morphe.extension.channelpoints.TvBet.open(a);
+            return true;
+        });
+        screen.addPreference(p);
     }
 
     private void addNgWords(PreferenceScreen screen) {

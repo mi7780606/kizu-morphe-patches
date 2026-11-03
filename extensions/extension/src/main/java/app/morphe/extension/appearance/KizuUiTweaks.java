@@ -139,6 +139,16 @@ public final class KizuUiTweaks {
             box.setOrientation(LinearLayout.VERTICAL);
             box.setPadding(pad, (int) (8 * d), pad, 0);
 
+            final AlertDialog[] self = new AlertDialog[1];
+            android.widget.Button betNow = new android.widget.Button(c);
+            betNow.setText("今すぐ賭ける（手動）");
+            betNow.setAllCaps(false);
+            betNow.setOnClickListener(v -> {
+                try { if (self[0] != null) self[0].dismiss(); } catch (Throwable ignored) {}
+                app.morphe.extension.channelpoints.TvBet.open(c);
+            });
+            box.addView(betNow);
+
             Switch auto = new Switch(c);
             auto.setText("自動で参加する");
             auto.setTextColor(Color.WHITE);
@@ -157,18 +167,17 @@ public final class KizuUiTweaks {
             note.setTextSize(TypedValue.COMPLEX_UNIT_SP, 12);
             box.addView(note);
 
-            new AlertDialog.Builder(c, android.R.style.Theme_Material_Dialog_Alert)
-                    .setTitle("予想の自動参加")
+            self[0] = new AlertDialog.Builder(c, android.R.style.Theme_Material_Dialog_Alert)
+                    .setTitle("予想")
                     .setView(box)
                     .setNegativeButton("キャンセル", null)
-                    .setNeutralButton("今すぐ賭ける", (dialog, which) ->
-                            app.morphe.extension.channelpoints.TvBet.open(c))
                     .setPositiveButton("保存", (dialog, which) -> {
                         KizuSettings.PREDICTION_AUTO.save(auto.isChecked());
                         KizuSettings.PREDICTION_OUTCOME.save(clamp(outcome, 1, 10, 1));
                         KizuSettings.PREDICTION_POINTS.save(clamp(points, 1, 250000, 100));
                     })
-                    .show();
+                    .create();
+            self[0].show();
         } catch (Throwable t) {
             Log.e(TAG, "dialog failed", t);
         }
