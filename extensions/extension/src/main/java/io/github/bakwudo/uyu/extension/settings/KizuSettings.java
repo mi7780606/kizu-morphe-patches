@@ -36,6 +36,12 @@ public final class KizuSettings {
     public static final IntSetting PREDICTION_POINTS =
             new IntSetting("kizu_prediction_points", 100, 1, 250000);
 
+    /** 手動の賭け用（Android TV版としてログインしたトークン） */
+    public static final StringSetting TV_TOKEN =
+            new StringSetting("kizu_tv_token", "");
+    public static final StringSetting TV_DEVICE_ID =
+            new StringSetting("kizu_tv_device_id", "");
+
     /** フォロー中「ライブ」の一番上におすすめのチャンネルを出す */
     public static final BooleanSetting RECOMMENDED_CHANNELS =
             new BooleanSetting("kizu_recommended_channels", true);

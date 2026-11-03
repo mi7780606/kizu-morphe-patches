@@ -161,6 +161,8 @@ public final class KizuUiTweaks {
                     .setTitle("予想の自動参加")
                     .setView(box)
                     .setNegativeButton("キャンセル", null)
+                    .setNeutralButton("今すぐ賭ける", (dialog, which) ->
+                            app.morphe.extension.channelpoints.TvBet.open(c))
                     .setPositiveButton("保存", (dialog, which) -> {
                         KizuSettings.PREDICTION_AUTO.save(auto.isChecked());
                         KizuSettings.PREDICTION_OUTCOME.save(clamp(outcome, 1, 10, 1));
