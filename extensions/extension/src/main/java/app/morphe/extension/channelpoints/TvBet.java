@@ -50,7 +50,7 @@ public final class TvBet {
             "query KizuPrediction($id: ID!) { user(id: $id) { login channel {"
             + " self { communityPoints { balance } }"
             + " activePredictionEvents { id status title predictionWindowSeconds createdAt"
-            + " outcomes { id title totalPoints totalUsers } } } } }";
+            + " outcomes { id title totalPoints totalUsers } SELF } } } }";
     private static final String BET_MUTATION =
             "mutation MakeCommunityPointsPredictionMutation($input: MakePredictionInput!) {"
             + " makePrediction(input: $input) { error { code maxPointsPerEvent userPointsSpent }"
@@ -159,8 +159,16 @@ public final class TvBet {
                         .put("operationName", "KizuPrediction")
                         .put("variables", new JSONObject().put("id", channelId))
                         .put("query", EVENTS_QUERY);
+                String withSelf = EVENTS_QUERY.replace("SELF", "self { prediction { points outcome { id } } }");
+                req.put("query", withSelf);
                 String[] r = gql(req.toString());
                 JSONObject res = parse(r[1]);
+                if (res != null && res.optJSONArray("errors") != null && path(res, "data", "user", "channel") == null) {
+                    // 自分の賭け(self)が使えない場合は外して再取得
+                    req.put("query", EVENTS_QUERY.replace("SELF", ""));
+                    r = gql(req.toString());
+                    res = parse(r[1]);
+                }
                 if ("401".equals(r[0])) { KizuSettings.TV_TOKEN.save(""); err = "ログインの期限が切れました。もう一度押してログインしてください。"; }
                 else if (res == null) err = "通信失敗 (HTTP " + r[0] + ")";
                 else {
@@ -199,23 +207,52 @@ public final class TvBet {
         LinearLayout box = box(c, d);
         String status = ev.optString("status");
         box.addView(text(c, d, ev.optString("title"), 16));
-        box.addView(text(c, d, ("ACTIVE".equalsIgnoreCase(status) ? "受付中" : "受付終了 (" + status + ")")
-                + (balance >= 0 ? "　所持: " + balance + " pt" : ""), 13));
+        String state;
+        if ("ACTIVE".equalsIgnoreCase(status)) {
+            long left = secondsLeft(ev);
+            state = left >= 0 ? "受付中（残り " + (left / 60) + "分" + (left % 60) + "秒）" : "受付中";
+        } else if ("LOCKED".equalsIgnoreCase(status)) state = "受付終了・結果待ち";
+        else state = status;
+        box.addView(text(c, d, state + (balance >= 0 ? "　所持: " + balance + " pt" : ""), 13));
+
+        JSONArray outs = ev.optJSONArray("outcomes");
+        long total = 0;
+        if (outs != null) for (int i = 0; i < outs.length(); i++) {
+            JSONObject o = outs.optJSONObject(i);
+            if (o != null) total += Math.max(0, o.optLong("totalPoints"));
+        }
+        JSONObject mine = path(ev, "self", "prediction");
+        String mineOutcome = mine == null ? null : path(mine, "outcome") == null ? null : path(mine, "outcome").optString("id");
+        if (mine != null) {
+            String name = "";
+            if (outs != null) for (int i = 0; i < outs.length(); i++) {
+                JSONObject o = outs.optJSONObject(i);
+                if (o != null && o.optString("id").equals(mineOutcome)) name = (i + 1) + ". " + o.optString("title");
+            }
+            TextView m = text(c, d, "あなたの賭け: " + name + "　" + mine.optLong("points") + " pt", 14);
+            m.setTextColor(0xFFBF94FF);
+            box.addView(m);
+        }
+        box.addView(text(c, d, "合計 " + total + " pt", 13));
 
         RadioGroup group = new RadioGroup(c);
-        JSONArray outs = ev.optJSONArray("outcomes");
         int def = Math.max(1, KizuSettings.PREDICTION_OUTCOME.get());
+        final long fTotal = total;
         if (outs != null) {
             for (int i = 0; i < outs.length(); i++) {
                 JSONObject o = outs.optJSONObject(i);
                 if (o == null) continue;
+                long op = Math.max(0, o.optLong("totalPoints"));
+                int pct = total > 0 ? (int) Math.round(op * 100.0 / total) : 0;
+                String odds = op > 0 ? String.format(java.util.Locale.US, "%.2f倍", (double) total / op) : "—";
                 RadioButton rb = new RadioButton(c);
                 rb.setId(View.generateViewId());
                 rb.setTag(o.optString("id"));
-                rb.setTextColor(Color.WHITE);
-                rb.setText((i + 1) + ". " + o.optString("title") + "（" + o.optLong("totalPoints") + " pt / " + o.optInt("totalUsers") + "人）");
+                rb.setTextColor(o.optString("id").equals(mineOutcome) ? 0xFFBF94FF : Color.WHITE);
+                rb.setText((i + 1) + ". " + o.optString("title") + "\n" + pct + "%　" + odds + "　" + op + " pt / " + o.optInt("totalUsers") + "人");
+                rb.setPadding(0, (int) (4 * d), 0, (int) (4 * d));
                 group.addView(rb);
-                if (i + 1 == Math.min(def, outs.length())) rb.setChecked(true);
+                if (mineOutcome != null ? o.optString("id").equals(mineOutcome) : i + 1 == Math.min(def, outs.length())) rb.setChecked(true);
             }
         }
         box.addView(group);
@@ -226,14 +263,41 @@ public final class TvBet {
         pts.setTextColor(Color.WHITE);
         pts.setText(String.valueOf(KizuSettings.PREDICTION_POINTS.get()));
         box.addView(pts);
+        TextView expect = text(c, d, "", 13);
+        box.addView(expect);
+        Runnable calc = () -> {
+            try {
+                View sel = group.findViewById(group.getCheckedRadioButtonId());
+                long p = Long.parseLong(pts.getText().toString().trim());
+                if (sel == null || p <= 0) { expect.setText(""); return; }
+                long op = 0;
+                for (int i = 0; outs != null && i < outs.length(); i++) {
+                    JSONObject o = outs.optJSONObject(i);
+                    if (o != null && o.optString("id").equals(String.valueOf(sel.getTag()))) op = Math.max(0, o.optLong("totalPoints"));
+                }
+                long win = Math.round((double) (fTotal + p) * p / (op + p));
+                expect.setText("当たれば約 " + win + " pt 戻る（+" + (win - p) + "）※今の賭け状況で計算");
+            } catch (Throwable t) { expect.setText(""); }
+        };
+        group.setOnCheckedChangeListener((g, id) -> calc.run());
+        pts.addTextChangedListener(new android.text.TextWatcher() {
+            public void beforeTextChanged(CharSequence a, int b, int x, int y) {}
+            public void onTextChanged(CharSequence a, int b, int x, int y) {}
+            public void afterTextChanged(android.text.Editable e) { calc.run(); }
+        });
+        calc.run();
 
+        TextView logout = text(c, d, "Kizu用ログインを解除", 12);
+        logout.setTextColor(0xFF888888);
+        logout.setOnClickListener(v -> { KizuSettings.TV_TOKEN.save(""); info(c, "予想", "ログインを解除しました。"); });
+        box.addView(logout);
         ScrollView sv = new ScrollView(c);
         sv.addView(box);
         AlertDialog dlg = new AlertDialog.Builder(c, android.R.style.Theme_Material_Dialog_Alert)
                 .setTitle("予想に賭ける")
                 .setView(sv)
                 .setNegativeButton("閉じる", null)
-                .setNeutralButton("ログアウト", (x, w) -> KizuSettings.TV_TOKEN.save(""))
+                .setNeutralButton("更新", (x, w) -> load(c))
                 .setPositiveButton("賭ける", null)
                 .create();
         dlg.show();
@@ -376,6 +440,16 @@ public final class TvBet {
     private static JSONObject path(JSONObject o, String... keys) {
         for (String k : keys) { if (o == null) return null; o = o.optJSONObject(k); }
         return o;
+    }
+
+    private static long secondsLeft(JSONObject ev) {
+        try {
+            long created = java.time.Instant.parse(ev.optString("createdAt")).toEpochMilli();
+            long end = created + ev.optLong("predictionWindowSeconds") * 1000L;
+            return Math.max(0, (end - System.currentTimeMillis()) / 1000L);
+        } catch (Throwable t) {
+            return -1;
+        }
     }
 
     private static String shorten(String s) {
