@@ -367,7 +367,26 @@ public final class TvBet {
         } else if ("LOCKED".equalsIgnoreCase(status)) state = "締め切り · 結果待ち";
         else state = status;
         root.addView(spaced(label(c, ev.optString("title"), 17, Color.WHITE, true), d, 10));
-        root.addView(spaced(label(c, state, 12, active ? 0xFF00C85A : SUB, false), d, 2));
+        TextView stateView = label(c, state, 13, active ? 0xFF00C85A : SUB, true);
+        root.addView(spaced(stateView, d, 2));
+        // 残り時間を1秒ごとに更新（ダイアログ表示中だけ）
+        if (active && secondsLeft(ev) >= 0) {
+            Runnable tick = new Runnable() {
+                @Override public void run() {
+                    if (!dlg.isShowing()) return;
+                    long left = secondsLeft(ev);
+                    if (left > 0) {
+                        stateView.setText(String.format(Locale.US, "受付中 · 残り %d:%02d（%d秒）", left / 60, left % 60, left));
+                        stateView.setTextColor(left <= 10 ? 0xFFEB0400 : 0xFF00C85A);
+                        MAIN.postDelayed(this, 1000);
+                    } else {
+                        stateView.setText("締め切り · 結果待ち");
+                        stateView.setTextColor(SUB);
+                    }
+                }
+            };
+            MAIN.post(tick);
+        }
 
         JSONArray outs = ev.optJSONArray("outcomes");
         int n = outs == null ? 0 : outs.length();
