@@ -52,10 +52,7 @@ public final class DanmakuView extends View {
     private boolean flushPosted;
     private boolean delayedWakePosted;
     private final Runnable flushRunnable = this::flushIncoming;
-    private final Runnable wakeRunnable = () -> {
-        delayedWakePosted = false;
-        if (!paused && windowVisible) postInvalidateOnAnimation();
-    };
+    private final Runnable wakeRunnable = this::wakeFromDelay;
 
     private long lastBatchAt;
     private float avgGapMs = 500f;
@@ -93,6 +90,11 @@ public final class DanmakuView extends View {
     private long lastTick = -1;
     private boolean paused;
     private boolean windowVisible = true;
+
+    private void wakeFromDelay() {
+        delayedWakePosted = false;
+        if (!paused && windowVisible) postInvalidateOnAnimation();
+    }
 
     public DanmakuView(Context context) {
         super(context);

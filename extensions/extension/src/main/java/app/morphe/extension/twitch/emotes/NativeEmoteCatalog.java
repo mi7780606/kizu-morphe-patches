@@ -13,6 +13,8 @@ import java.util.Locale;
 import java.util.Map;
 import java.util.concurrent.atomic.AtomicBoolean;
 
+import app.morphe.extension.KizuRuntime;
+
 /**
  * Native Twitch emotes used only for autocomplete suggestions.
  *
@@ -310,8 +312,8 @@ final class NativeEmoteCatalog {
 
     static void ensureLoaded(Context context) {
         if (context == null || !DB_LOAD_STARTED.compareAndSet(false, true)) return;
-        Context app = context.getApplicationContext();
-        app.morphe.extension.KizuRuntime.ioExecutor().execute(() -> loadRecentNativeEmotes(app));
+        Context appContext = context.getApplicationContext();
+        KizuRuntime.ioExecutor().execute(() -> loadRecentNativeEmotes(appContext));
     }
 
     private static void loadRecentNativeEmotes(Context context) {
