@@ -4,15 +4,31 @@ import android.content.Context;
 import android.util.Log;
 import android.view.View;
 import android.view.ViewParent;
+import android.widget.EditText;
 import android.widget.ImageView;
 import android.widget.LinearLayout;
 
 import java.lang.ref.WeakReference;
 import java.lang.reflect.Field;
+import java.util.concurrent.ConcurrentHashMap;
+
+import app.morphe.extension.Utils;
+import app.morphe.extension.twitch.emotes.EmoteAutocomplete;
 
 /** パッチから直接呼ばれる入口（チャット入力欄・チャンネルポイント画面が作られたとき） */
 public final class KizuHooks {
     private static final String TAG = "KizuHooks";
+    private static final ConcurrentHashMap<String, Field> FIELD_CACHE = new ConcurrentHashMap<>();
+    private static final Field MISSING_FIELD;
+
+    static {
+        Field sentinel = null;
+        try {
+            sentinel = KizuHooks.class.getDeclaredField("TAG");
+        } catch (NoSuchFieldException ignored) {}
+        MISSING_FIELD = sentinel;
+    }
+
     private static WeakReference<ImageView> chatSettings = new WeakReference<>(null);
 
     private KizuHooks() {}
@@ -20,8 +36,15 @@ public final class KizuHooks {
     /** i76 のコンストラクタ末尾から呼ばれる */
     public static void onChatInputCreated(Object delegate) {
         try {
-            ImageView v = findImageView(delegate, "view_chat_settings");
-            if (v != null) chatSettings = new WeakReference<>(v);
+            ImageView v = findViewById(delegate, ImageView.class, "view_chat_settings");
+            if (v != null) {
+                chatSettings = new WeakReference<>(v);
+                KizuUiTweaks.bindChatMenuButton(v);
+            }
+            EditText input = findViewById(delegate, EditText.class, "message_input");
+            if (input != null) {
+                EmoteAutocomplete.attachDirectly(input);
+            }
         } catch (Throwable t) {
             Log.e(TAG, "chat input hook failed", t);
         }
@@ -42,7 +65,7 @@ public final class KizuHooks {
     /** tb9 のコンストラクタ末尾から呼ばれる。予想ボタンを常に置く */
     public static void onCommunityPointsCreated(Object delegate) {
         try {
-            ImageView more = findImageView(delegate, "more_button");
+            ImageView more = findViewById(delegate, ImageView.class, "more_button");
             if (more == null) return;
             ViewParent p = more.getParent();
             if (p instanceof LinearLayout) KizuUiTweaks.addPredictionButtonTo((LinearLayout) p, more);
@@ -54,7 +77,7 @@ public final class KizuHooks {
     /** en9（報酬一覧）のコンストラクタ末尾から呼ばれる。「〇〇の報酬」の行の︙の左に置く */
     public static void onRewardsCreated(Object delegate) {
         try {
-            ImageView more = findImageView(delegate, "reward_options");
+            ImageView more = findViewById(delegate, ImageView.class, "reward_options");
             if (more == null) return;
             ViewParent p = more.getParent();
             if (p instanceof LinearLayout) KizuUiTweaks.addPredictionButtonTo((LinearLayout) p, more);
@@ -63,23 +86,39 @@ public final class KizuHooks {
         }
     }
 
-    private static ImageView findImageView(Object delegate, String idName) throws IllegalAccessException {
+    private static <T extends View> T findViewById(Object delegate, Class<T> viewClass, String idName)
+            throws IllegalAccessException {
         if (delegate == null) return null;
+        Class<?> delegateClass = delegate.getClass();
+        String cacheKey = delegateClass.getName() + "#" + idName;
+        Field cached = FIELD_CACHE.get(cacheKey);
+        if (cached != null) {
+            if (cached == MISSING_FIELD) return null;
+            Object val = cached.get(delegate);
+            return viewClass.isInstance(val) ? viewClass.cast(val) : null;
+        }
+
         Context c = null;
         int id = 0;
-        for (Class<?> k = delegate.getClass(); k != null && k != Object.class; k = k.getSuperclass()) {
+        for (Class<?> k = delegateClass; k != null && k != Object.class; k = k.getSuperclass()) {
             for (Field f : k.getDeclaredFields()) {
-                if (!ImageView.class.isAssignableFrom(f.getType())) continue;
+                if (!viewClass.isAssignableFrom(f.getType())) continue;
                 f.setAccessible(true);
                 Object o = f.get(delegate);
-                if (!(o instanceof ImageView)) continue;
-                ImageView iv = (ImageView) o;
+                if (!viewClass.isInstance(o)) continue;
+                T view = viewClass.cast(o);
                 if (c == null) {
-                    c = iv.getContext();
-                    id = c.getResources().getIdentifier(idName, "id", c.getPackageName());
+                    c = view.getContext();
+                    id = Utils.getResourceId(c, idName, "id");
                 }
-                if (id != 0 && iv.getId() == id) return iv;
+                if (id != 0 && view.getId() == id) {
+                    FIELD_CACHE.putIfAbsent(cacheKey, f);
+                    return view;
+                }
             }
+        }
+        if (id != 0 && MISSING_FIELD != null) {
+            FIELD_CACHE.putIfAbsent(cacheKey, MISSING_FIELD);
         }
         return null;
     }

@@ -8,7 +8,6 @@ import org.json.JSONArray;
 import org.json.JSONObject;
 
 import java.io.ByteArrayOutputStream;
-import java.io.File;
 import java.io.InputStream;
 import java.net.HttpURLConnection;
 import java.net.URL;
@@ -18,8 +17,13 @@ import java.util.LinkedHashMap;
 import java.util.Map;
 import java.util.Set;
 import java.util.UUID;
+import java.util.concurrent.ScheduledFuture;
+import java.util.concurrent.TimeUnit;
 
+import app.morphe.extension.KizuRuntime;
+import app.morphe.extension.Utils;
 import io.github.bakwudo.uyu.extension.settings.KizuSettings;
+import io.github.bakwudo.uyu.extension.settings.Setting;
 
 /** 視聴中チャンネルの予想（賭け）に、設定した番号・ポイントで自動参加する */
 public final class PredictionBetter {
@@ -28,13 +32,11 @@ public final class PredictionBetter {
     private static final String GQL_URL = "https://gql.twitch.tv/gql";
     private static final String CLIENT_ID = "kd1unb4b3q4t58fwlpcbzcbnm76a8fp";
 
-    // Twitch 31.3.1 (aj9) CommunityPointsPredictionQuery を必要な項目だけにしたもの
     private static final String EVENTS_QUERY =
             "query CommunityPointsPredictionQuery($id: ID!) { user(id: $id) { channel {"
             + " activePredictionEvents { id status createdAt predictionWindowSeconds title"
             + " outcomes { id title } } } } }";
 
-    // Twitch 31.3.1 (iio) MakeCommunityPointsPredictionMutation
     private static final String BET_MUTATION =
             "mutation MakeCommunityPointsPredictionMutation($input: MakePredictionInput!) {"
             + " makePrediction(input: $input) { error { code maxPointsPerEvent userPointsSpent }"
@@ -47,36 +49,59 @@ public final class PredictionBetter {
                 }
             });
 
-    private static volatile boolean started;
+    private static Context appContext;
+    private static ScheduledFuture<?> pollFuture;
+    private static boolean listenerRegistered;
+    private static final SharedPreferences.OnSharedPreferenceChangeListener PREF_LISTENER =
+            (prefs, key) -> {
+                if (key == null || KizuSettings.PREDICTION_AUTO.key.equals(key)) {
+                    syncSchedule();
+                }
+            };
 
     private PredictionBetter() {}
 
     public static synchronized void start(Context context) {
-        if (started || context == null) return;
-        started = true;
-        final Context app = context.getApplicationContext();
-        Thread t = new Thread(() -> {
-            while (!Thread.currentThread().isInterrupted()) {
-                try {
-                    if (KizuSettings.PREDICTION_AUTO.get()) tick(app);
-                } catch (Throwable e) {
-                    Log.e(TAG, "tick failed", e);
-                }
-                try {
-                    Thread.sleep(POLL_MS);
-                } catch (InterruptedException e) {
-                    return;
-                }
+        if (context == null) return;
+        appContext = context.getApplicationContext();
+        if (!listenerRegistered) {
+            listenerRegistered = true;
+            Setting.addChangeListener(PREF_LISTENER);
+        }
+        syncSchedule();
+    }
+
+    private static synchronized void syncSchedule() {
+        if (appContext == null) return;
+        boolean enabled = false;
+        try {
+            enabled = KizuSettings.PREDICTION_AUTO.get();
+        } catch (Throwable ignored) {}
+
+        if (!enabled) {
+            if (pollFuture != null) {
+                pollFuture.cancel(false);
+                pollFuture = null;
             }
-        }, "kizu-prediction");
-        t.setDaemon(true);
-        t.start();
+            return;
+        }
+        if (pollFuture != null) return;
+        final Context app = appContext;
+        pollFuture = KizuRuntime.scheduler().scheduleWithFixedDelay(() -> {
+            try {
+                if (KizuSettings.PREDICTION_AUTO.get() && Utils.isAppInForeground()) {
+                    tick(app);
+                }
+            } catch (Throwable e) {
+                Log.e(TAG, "tick failed", e);
+            }
+        }, 0L, POLL_MS, TimeUnit.MILLISECONDS);
     }
 
     private static void tick(Context context) throws Exception {
         String channelId = ChannelPoints.currentChannelId();
         if (channelId == null) return;
-        String token = readAuthToken(context);
+        String token = KizuRuntime.readAuthToken(context);
         if (token.isEmpty()) return;
 
         JSONObject req = new JSONObject()
@@ -121,7 +146,7 @@ public final class PredictionBetter {
                 .put("variables", new JSONObject().put("input", input))
                 .put("query", BET_MUTATION);
         JSONObject res = parse(post(token, req.toString()));
-        if (res == null) return; // 通信失敗は次回やり直す
+        if (res == null) return;
         JSONObject data = res.optJSONObject("data");
         JSONObject mp = data == null ? null : data.optJSONObject("makePrediction");
         if (mp == null) return;
@@ -130,7 +155,6 @@ public final class PredictionBetter {
             String code = err.optString("code", "");
             int max = err.optInt("maxPointsPerEvent", 0);
             int spent = err.optInt("userPointsSpent", 0);
-            // 上限を超えたときは上限で1回だけやり直す
             if (max > 0 && points > max - spent && max - spent > 0 && !"DUPLICATE_PREDICTION".equals(code)) {
                 Log.i(TAG, "retry with max " + (max - spent));
                 DONE.add(eventId);
@@ -143,23 +167,6 @@ public final class PredictionBetter {
         }
         DONE.add(eventId);
         Log.i(TAG, "bet ok event=" + eventId + " points=" + points);
-    }
-
-    private static String readAuthToken(Context context) {
-        File dir = new File(context.getApplicationInfo().dataDir, "shared_prefs");
-        File[] files = dir.listFiles();
-        if (files == null) return "";
-        for (File f : files) {
-            if (f == null || !f.getName().endsWith(".xml")) continue;
-            String name = f.getName().substring(0, f.getName().length() - 4);
-            try {
-                SharedPreferences p = context.getSharedPreferences(name, Context.MODE_PRIVATE);
-                String t = p.getString("authToken_v2", null);
-                if (t != null && !t.trim().isEmpty()) return t.trim();
-            } catch (Throwable ignored) {
-            }
-        }
-        return "";
     }
 
     private static String post(String token, String body) {
@@ -176,7 +183,10 @@ public final class PredictionBetter {
             byte[] b = body.getBytes(StandardCharsets.UTF_8);
             c.setFixedLengthStreamingMode(b.length);
             c.getOutputStream().write(b);
-            if (c.getResponseCode() / 100 != 2) return null;
+            if (c.getResponseCode() / 100 != 2) {
+                drainQuietly(c.getErrorStream());
+                return null;
+            }
             try (InputStream in = c.getInputStream()) {
                 ByteArrayOutputStream out = new ByteArrayOutputStream();
                 byte[] buf = new byte[8192];
@@ -194,6 +204,16 @@ public final class PredictionBetter {
         } finally {
             if (c != null) c.disconnect();
         }
+    }
+
+    private static void drainQuietly(InputStream stream) {
+        if (stream == null) return;
+        try (InputStream s = stream) {
+            byte[] buf = new byte[1024];
+            int total = 0;
+            int n;
+            while (total < 8192 && (n = s.read(buf)) != -1) total += n;
+        } catch (Throwable ignored) {}
     }
 
     private static JSONObject parse(String s) {

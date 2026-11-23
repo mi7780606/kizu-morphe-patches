@@ -1,102 +1,132 @@
 package io.github.bakwudo.uyu.extension.danmaku;
 
-import android.content.res.Configuration;
 import android.app.Activity;
+import android.content.res.Configuration;
+import android.graphics.Rect;
 import android.os.Handler;
 import android.os.Looper;
 import android.view.View;
 import android.view.ViewGroup;
 import android.widget.EditText;
 import android.widget.TextView;
-import android.graphics.Rect;
 
+import java.lang.ref.WeakReference;
+import java.util.Locale;
 import java.util.WeakHashMap;
 
 import io.github.bakwudo.uyu.extension.Utils;
 import io.github.bakwudo.uyu.extension.settings.Settings;
 
 /**
- * Keeps Twitch's landscape chat off and hides its chat mode button, so the stream fills the
- * screen in landscape. Twitch's own saved chat mode is not changed, so turning the setting off
- * brings back the mode the user chose before.
+ * Keeps Twitch's landscape chat off and adjusts custom landscape chat width/opacity.
  */
 @SuppressWarnings("unused")
 public final class LandscapeChatPatch {
-    /** Twitch's preference for the landscape chat mode, and its value for no chat. */
     private static final String LANDSCAPE_CHAT_MODE_KEY = "pref_landscape_chat_mode";
     private static final String CHAT_HIDDEN = "Hidden";
-    /**
-     * Until this is set, Twitch switches a hidden landscape chat to the chat overlay once, to
-     * introduce the overlay, and saves that as the user's choice.
-     */
     private static final String ONE_CHAT_INTRODUCED_KEY = "pref_onechat_education_dialog_shown";
 
     private static final Handler MAIN = new Handler(Looper.getMainLooper());
+    private static final Object STATE_LOCK = new Object();
     private static final WeakHashMap<View, Integer> ORIGINAL_WIDTHS = new WeakHashMap<>();
     private static final WeakHashMap<View, Float> ORIGINAL_ALPHAS = new WeakHashMap<>();
     private static final WeakHashMap<Activity, Boolean> SCHEDULED = new WeakHashMap<>();
-    private static final long[] RETRIES_MS = {0L, 400L, 900L, 1800L, 3500L, 6000L};
+    private static final long[] RETRIES_MS = {0L, 400L, 1200L, 2800L};
+    private static final String[] CHAT_PANEL_IDS = {"chat_wrapper", "one_chat_overlay_container"};
 
-    private LandscapeChatPatch() {
-    }
+    private LandscapeChatPatch() {}
 
     /** Apply the landscape chat controls after Twitch has finished building the theatre view. */
     public static void onActivityStarted(Activity activity) {
         if (activity == null) return;
+        boolean sizeOn = Settings.LANDSCAPE_CHAT_SIZE_ENABLED.get();
+        boolean opacityOn = Settings.LANDSCAPE_CHAT_OPACITY_ENABLED.get();
+        if (!sizeOn && !opacityOn) {
+            restoreLandscapeControls();
+            return;
+        }
+        if (activity.getResources().getConfiguration().orientation != Configuration.ORIENTATION_LANDSCAPE) {
+            restoreLandscapeControls();
+            return;
+        }
         synchronized (SCHEDULED) {
             if (SCHEDULED.containsKey(activity)) return;
             SCHEDULED.put(activity, Boolean.TRUE);
         }
+        final WeakReference<Activity> ref = new WeakReference<>(activity);
+        final boolean[] done = {false};
         for (long delay : RETRIES_MS) {
             MAIN.postDelayed(() -> {
-                try { applyLandscapeControls(activity); }
-                catch (Throwable ex) { Utils.logError("Landscape chat adjustment failed", ex); }
+                if (done[0]) return;
+                Activity current = ref.get();
+                if (current == null || current.isFinishing() || current.isDestroyed()) {
+                    done[0] = true;
+                    return;
+                }
+                try {
+                    if (applyLandscapeControls(current)) done[0] = true;
+                } catch (Throwable ex) {
+                    Utils.logError("Landscape chat adjustment failed", ex);
+                }
             }, delay);
         }
         MAIN.postDelayed(() -> {
-            synchronized (SCHEDULED) { SCHEDULED.remove(activity); }
-        }, RETRIES_MS[RETRIES_MS.length - 1] + 500L);
+            Activity current = ref.get();
+            if (current != null) {
+                synchronized (SCHEDULED) { SCHEDULED.remove(current); }
+            }
+        }, RETRIES_MS[RETRIES_MS.length - 1] + 200L);
     }
 
-    private static void applyLandscapeControls(Activity activity) {
-        if (activity.isFinishing() || activity.isDestroyed()) return;
-        View root = activity.getWindow().getDecorView();
-        if (root == null) return;
+    private static boolean applyLandscapeControls(Activity activity) {
+        if (activity.isFinishing() || activity.isDestroyed()) return true;
+        View root = activity.getWindow() == null ? null : activity.getWindow().getDecorView();
+        if (root == null) return false;
         boolean landscape = root.getResources().getConfiguration().orientation
                 == Configuration.ORIENTATION_LANDSCAPE;
-        if (!landscape || (!Settings.LANDSCAPE_CHAT_SIZE_ENABLED.get()
-                && !Settings.LANDSCAPE_CHAT_OPACITY_ENABLED.get())) {
+        boolean sizeOn = Settings.LANDSCAPE_CHAT_SIZE_ENABLED.get();
+        boolean opacityOn = Settings.LANDSCAPE_CHAT_OPACITY_ENABLED.get();
+        if (!landscape || (!sizeOn && !opacityOn)) {
             restoreLandscapeControls();
-            return;
+            return !landscape || (!sizeOn && !opacityOn);
         }
         View chat = findChatPanel(root);
-        if (chat == null) return;
+        if (chat == null) return false;
+        applyToChatView(root, chat, sizeOn, opacityOn);
+        return true;
+    }
 
-        if (!ORIGINAL_WIDTHS.containsKey(chat)) {
-            ViewGroup.LayoutParams lp = chat.getLayoutParams();
-            if (lp != null) ORIGINAL_WIDTHS.put(chat, lp.width);
-            ORIGINAL_ALPHAS.put(chat, chat.getAlpha());
-        }
-
-        if (Settings.LANDSCAPE_CHAT_SIZE_ENABLED.get()) {
-            ViewGroup.LayoutParams lp = chat.getLayoutParams();
-            if (lp != null && root.getWidth() > 0) {
-                lp.width = Math.max(1, Math.round(root.getWidth()
-                        * Settings.LANDSCAPE_CHAT_SIZE.get() / 100f));
-                if (lp instanceof android.widget.LinearLayout.LayoutParams) {
-                    ((android.widget.LinearLayout.LayoutParams) lp).weight = 0f;
-                }
-                chat.setLayoutParams(lp);
+    private static void applyToChatView(View root, View chat, boolean sizeOn, boolean opacityOn) {
+        synchronized (STATE_LOCK) {
+            if (!ORIGINAL_WIDTHS.containsKey(chat)) {
+                ViewGroup.LayoutParams lp = chat.getLayoutParams();
+                if (lp != null) ORIGINAL_WIDTHS.put(chat, lp.width);
+                ORIGINAL_ALPHAS.put(chat, chat.getAlpha());
             }
         }
-        if (Settings.LANDSCAPE_CHAT_OPACITY_ENABLED.get()) {
-            chat.setAlpha(Math.max(0f, Math.min(1f,
-                    Settings.LANDSCAPE_CHAT_OPACITY.get() / 100f)));
+        if (sizeOn) {
+            ViewGroup.LayoutParams lp = chat.getLayoutParams();
+            if (lp != null && root.getWidth() > 0) {
+                int targetWidth = Math.max(1, Math.round(root.getWidth()
+                        * Settings.LANDSCAPE_CHAT_SIZE.get() / 100f));
+                if (lp.width != targetWidth) {
+                    lp.width = targetWidth;
+                    if (lp instanceof android.widget.LinearLayout.LayoutParams llp) {
+                        llp.weight = 0f;
+                    }
+                    chat.setLayoutParams(lp);
+                }
+            }
+        }
+        if (opacityOn) {
+            float alpha = Math.max(0f, Math.min(1f, Settings.LANDSCAPE_CHAT_OPACITY.get() / 100f));
+            if (chat.getAlpha() != alpha) chat.setAlpha(alpha);
         }
     }
 
     private static void restoreLandscapeControls() {
-        synchronized (ORIGINAL_WIDTHS) {
+        synchronized (STATE_LOCK) {
+            if (ORIGINAL_WIDTHS.isEmpty()) return;
             for (View chat : ORIGINAL_WIDTHS.keySet()) {
                 try {
                     Integer width = ORIGINAL_WIDTHS.get(chat);
@@ -116,22 +146,33 @@ public final class LandscapeChatPatch {
 
     private static View findChatPanel(View root) {
         if (!(root instanceof ViewGroup) || root.getWidth() <= 0 || root.getHeight() <= 0) return null;
+        int rootWidth = root.getWidth();
+        int rootHeight = root.getHeight();
+        Rect rect = new Rect();
+        for (String name : CHAT_PANEL_IDS) {
+            int id = Utils.getResourceId(root.getContext(), name, "id");
+            if (id == 0) continue;
+            View direct = root.findViewById(id);
+            if (direct != null && direct.isShown() && direct.getGlobalVisibleRect(rect)
+                    && rect.width() >= rootWidth * 0.15f && rect.width() <= rootWidth * 0.75f
+                    && rect.height() >= rootHeight * 0.35f && rect.right >= rootWidth * 0.80f) {
+                return direct;
+            }
+        }
         Candidate best = new Candidate();
-        collectCandidates((ViewGroup) root, root.getWidth(), root.getHeight(), best);
+        collectCandidates((ViewGroup) root, rootWidth, rootHeight, rect, best);
         return best.view;
     }
 
-    private static void collectCandidates(ViewGroup group, int rootWidth, int rootHeight,
-                                          Candidate best) {
+    private static void collectCandidates(
+            ViewGroup group, int rootWidth, int rootHeight, Rect r, Candidate best) {
         for (int i = 0; i < group.getChildCount(); i++) {
             View child = group.getChildAt(i);
             if (child == null || child.getVisibility() != View.VISIBLE) continue;
-            if (child instanceof ViewGroup) {
-                Rect r = new Rect();
-                child.getGlobalVisibleRect(r);
-                if (r.width() >= rootWidth * 0.15f && r.width() <= rootWidth * 0.75f
-                        && r.height() >= rootHeight * 0.35f
-                        && r.right >= rootWidth * 0.80f
+            if (child instanceof ViewGroup childGroup) {
+                if (child.getGlobalVisibleRect(r)
+                        && r.width() >= rootWidth * 0.15f && r.width() <= rootWidth * 0.75f
+                        && r.height() >= rootHeight * 0.35f && r.right >= rootWidth * 0.80f
                         && containsChatSignal(child, 0)) {
                     float score = (r.right / (float) rootWidth) * 4f
                             + r.width() / (float) rootWidth
@@ -140,24 +181,23 @@ public final class LandscapeChatPatch {
                         best.score = score;
                         best.view = child;
                     }
+                    continue;
                 }
-                collectCandidates((ViewGroup) child, rootWidth, rootHeight, best);
+                collectCandidates(childGroup, rootWidth, rootHeight, r, best);
             }
         }
     }
 
     private static boolean containsChatSignal(View view, int depth) {
         if (view == null || depth > 12) return false;
-        String className = view.getClass().getName().toLowerCase(java.util.Locale.ROOT);
+        String className = view.getClass().getName().toLowerCase(Locale.ROOT);
         if (className.contains("chat")) return true;
         if (containsChatWord(view.getContentDescription())) return true;
-        if (view instanceof TextView) {
-            TextView tv = (TextView) view;
+        if (view instanceof TextView tv) {
             if (containsChatWord(tv.getText()) || containsChatWord(tv.getHint())) return true;
         }
-        if (view instanceof EditText && containsChatWord(((EditText) view).getHint())) return true;
-        if (view instanceof ViewGroup) {
-            ViewGroup group = (ViewGroup) view;
+        if (view instanceof EditText et && containsChatWord(et.getHint())) return true;
+        if (view instanceof ViewGroup group) {
             for (int i = 0; i < group.getChildCount(); i++) {
                 if (containsChatSignal(group.getChildAt(i), depth + 1)) return true;
             }
@@ -167,7 +207,7 @@ public final class LandscapeChatPatch {
 
     private static boolean containsChatWord(CharSequence value) {
         if (value == null) return false;
-        String text = value.toString().toLowerCase(java.util.Locale.ROOT);
+        String text = value.toString().toLowerCase(Locale.ROOT);
         return text.contains("send a message") || text.contains("send message")
                 || text.equals("chat") || text.contains("chat message")
                 || text.contains("chat input");
@@ -178,57 +218,45 @@ public final class LandscapeChatPatch {
         float score = -Float.MAX_VALUE;
     }
 
-    /**
-     * Injection point: start of Twitch's preference getters for string values.
-     *
-     * @param key The preference key.
-     * @return The value to return instead of the stored one, or null to read it as usual.
-     */
     public static String overridePreference(String key) {
         if (!LANDSCAPE_CHAT_MODE_KEY.equals(key)) return null;
         return Settings.DANMAKU_HIDE_LANDSCAPE_CHAT.get() ? CHAT_HIDDEN : null;
     }
 
-    /**
-     * Injection point: end of Twitch's preference getter for boolean values.
-     *
-     * @param key   The preference key.
-     * @param value The stored value.
-     * @return The value to return.
-     */
     public static boolean overrideBooleanPreference(String key, boolean value) {
         if (ONE_CHAT_INTRODUCED_KEY.equals(key) && Settings.DANMAKU_HIDE_LANDSCAPE_CHAT.get()) return true;
         return value;
     }
 
-    /**
-     * Injection point: end of the constructor of the theatre's chat view model. When this returns
-     * true, the view model is changed to show no chat in landscape: the chat mode is set to
-     * hidden, and the flags that open the chat beside the video (chat overlay, chat tray,
-     * community highlights, extensions, chat input) are cleared.
-     */
     public static boolean isLandscapeChatHidden() {
         return Settings.DANMAKU_HIDE_LANDSCAPE_CHAT.get();
     }
 
-    /**
-     * Injection point: after the player's bottom controls are rendered, which sets the chat mode
-     * button's visibility.
-     *
-     * @param bottomControlsViewDelegate The bottom controls' view delegate.
-     */
     public static void onBottomControlsRendered(Object bottomControlsViewDelegate) {
         try {
-            if (!Settings.DANMAKU_HIDE_LANDSCAPE_CHAT.get()) return;
             View root = ViewDelegates.rootView(bottomControlsViewDelegate);
             if (root == null) return;
-            if (root.getResources().getConfiguration().orientation != Configuration.ORIENTATION_LANDSCAPE) {
+            boolean landscape = root.getResources().getConfiguration().orientation
+                    == Configuration.ORIENTATION_LANDSCAPE;
+            if (!landscape) {
+                restoreLandscapeControls();
                 return;
             }
-            View button = root.findViewById(Utils.getResourceId(root.getContext(), "chat_mode_button", "id"));
-            if (button != null) button.setVisibility(View.GONE);
+            if (Settings.DANMAKU_HIDE_LANDSCAPE_CHAT.get()) {
+                View button = root.findViewById(Utils.getResourceId(root.getContext(), "chat_mode_button", "id"));
+                if (button != null) button.setVisibility(View.GONE);
+            }
+            boolean sizeOn = Settings.LANDSCAPE_CHAT_SIZE_ENABLED.get();
+            boolean opacityOn = Settings.LANDSCAPE_CHAT_OPACITY_ENABLED.get();
+            if (sizeOn || opacityOn) {
+                View decor = root.getRootView();
+                if (decor != null) {
+                    View chat = findChatPanel(decor);
+                    if (chat != null) applyToChatView(decor, chat, sizeOn, opacityOn);
+                }
+            }
         } catch (Exception ex) {
-            Utils.logError("Failed to hide the chat mode button", ex);
+            Utils.logError("Failed to handle landscape bottom controls", ex);
         }
     }
 }

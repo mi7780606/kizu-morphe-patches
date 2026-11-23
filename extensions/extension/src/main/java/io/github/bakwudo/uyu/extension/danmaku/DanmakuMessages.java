@@ -1,18 +1,17 @@
 package io.github.bakwudo.uyu.extension.danmaku;
 
 import java.util.ArrayList;
+import java.util.Collections;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 
+import io.github.bakwudo.uyu.extension.settings.KizuSettings;
+
 /**
- * Turns received chat messages into danmaku comments.
+ * Turns received chat messages into danmaku comments without regex allocations or redundant seen-id checks.
  */
 final class DanmakuMessages {
-    /**
-     * Message ids already handled. The chat connection sends the last messages again when a
-     * channel is joined again, and the same batch can reach the hook more than once.
-     */
     private static final Map<String, Boolean> seenIds = new LinkedHashMap<>(256, 0.75f, false) {
         @Override
         protected boolean removeEldestEntry(Map.Entry<String, Boolean> eldest) {
@@ -20,13 +19,10 @@ final class DanmakuMessages {
         }
     };
 
-    private DanmakuMessages() {
-    }
+    private DanmakuMessages() {}
 
-    // ===== 流速に応じた間引き（弾幕だけ。チャット欄のコメントは減らさない） =====
     private static final long DUP_WINDOW_MS = 3000;
     private static final int FLOOD_PER_SECOND = 10;
-    /** 最近流した本文 → 時刻（連投の判定用） */
     private static final Map<String, Long> recentBodies = new LinkedHashMap<>(256, 0.75f, true) {
         @Override
         protected boolean removeEldestEntry(Map.Entry<String, Long> eldest) {
@@ -36,16 +32,35 @@ final class DanmakuMessages {
     private static float floodTokens = FLOOD_PER_SECOND;
     private static long floodRefillAt;
 
-    /**
-     * 混雑: 連投・スタンプだけのコメントを先に削り、全体を半分程度に。
-     * 激流: 同じく削ったうえで1秒あたり最大10件。
-     */
+    /** Deduplicates messages before thinning so replayed batches do not burn flood budget. */
+    static List<?> filterNew(List<?> messages) {
+        if (messages == null || messages.isEmpty()) return Collections.emptyList();
+        List<Object> fresh = null;
+        synchronized (seenIds) {
+            for (int i = 0, n = messages.size(); i < n; i++) {
+                Object message = messages.get(i);
+                String id = ChatMessages.messageId(message);
+                boolean dup = id != null && seenIds.put(id, Boolean.TRUE) != null;
+                if (dup) {
+                    if (fresh == null) {
+                        fresh = new ArrayList<>(n);
+                        for (int j = 0; j < i; j++) fresh.add(messages.get(j));
+                    }
+                } else if (fresh != null) {
+                    fresh.add(message);
+                }
+            }
+        }
+        return fresh == null ? messages : fresh;
+    }
+
     static synchronized List<?> thin(List<?> messages, int level) {
         if (level <= 0 || messages.isEmpty()) return messages;
         long now = android.os.SystemClock.uptimeMillis();
         List<Object> good = new ArrayList<>(messages.size());
-        List<Object> weak = new ArrayList<>(); // スタンプだけ・連投
-        for (Object message : messages) {
+        List<Object> weak = new ArrayList<>();
+        for (int i = 0, n = messages.size(); i < n; i++) {
+            Object message = messages.get(i);
             String body = plainBody(message);
             if (body == null) continue;
             boolean emoteOnly = body.isEmpty();
@@ -55,7 +70,8 @@ final class DanmakuMessages {
                 dup = at != null && now - at < DUP_WINDOW_MS;
                 recentBodies.put(body, now);
             }
-            if (emoteOnly || dup) weak.add(message); else good.add(message);
+            if (emoteOnly || dup) weak.add(message);
+            else good.add(message);
         }
 
         int budget;
@@ -66,7 +82,7 @@ final class DanmakuMessages {
             floodTokens = Math.min(FLOOD_PER_SECOND, floodTokens + (now - floodRefillAt) * FLOOD_PER_SECOND / 1000f);
             floodRefillAt = now;
             budget = (int) floodTokens;
-            if (budget <= 0) return java.util.Collections.emptyList();
+            if (budget <= 0) return Collections.emptyList();
         }
 
         List<Object> out = new ArrayList<>(Math.min(budget, messages.size()));
@@ -76,7 +92,6 @@ final class DanmakuMessages {
         return out;
     }
 
-    /** 全体から均等に count 件取る（同じ時間帯に偏らないように） */
     private static void pickEvenly(List<Object> from, int count, List<Object> out) {
         int n = from.size();
         if (count <= 0 || n == 0) return;
@@ -85,13 +100,13 @@ final class DanmakuMessages {
         for (int i = 0; i < count; i++) out.add(from.get(Math.min(n - 1, (int) (i * step))));
     }
 
-    /** 文字の部分だけの本文。スタンプだけなら空文字、読めなければ null */
     private static String plainBody(Object message) {
         Object info = ChatMessages.messageInfo(message);
         List<?> tokens = info == null ? null : ChatMessages.tokens(info);
         if (tokens == null) return null;
         StringBuilder sb = new StringBuilder();
-        for (Object token : tokens) {
+        for (int i = 0, n = tokens.size(); i < n; i++) {
+            Object token = tokens.get(i);
             if (ChatMessages.emoteTokenId(token) != null) continue;
             String s = ChatMessages.textTokenText(token);
             if (s == null) s = ChatMessages.mentionTokenText(token);
@@ -101,42 +116,28 @@ final class DanmakuMessages {
         return sb.toString().trim();
     }
 
-    /**
-     * @param messages ChatLiveMessage objects.
-     * @return Comments for the messages not seen before. Messages without text or emotes are
-     * left out.
-     */
     static List<DanmakuComment> toComments(List<?> messages) {
         List<DanmakuComment> comments = new ArrayList<>(messages.size());
         int maxLength = 0;
-        try { maxLength = io.github.bakwudo.uyu.extension.settings.KizuSettings.DANMAKU_MAX_LENGTH.get(); }
+        try { maxLength = KizuSettings.DANMAKU_MAX_LENGTH.get(); }
         catch (Throwable ignored) {}
-        for (Object message : messages) {
-            String id = ChatMessages.messageId(message);
-            if (id != null) {
-                synchronized (seenIds) {
-                    if (seenIds.put(id, Boolean.TRUE) != null) continue;
-                }
-            }
-
+        for (int i = 0, n = messages.size(); i < n; i++) {
+            Object message = messages.get(i);
             Object info = ChatMessages.messageInfo(message);
             List<?> tokens = info == null ? null : ChatMessages.tokens(info);
             DanmakuComment comment = tokens == null ? null : toComment(tokens);
             if (comment == null) continue;
-            // 長文は弾幕にだけ流さない（チャット欄・過去コメントには残る）
             if (maxLength > 0 && length(comment) > maxLength) continue;
             comments.add(comment);
         }
         return comments;
     }
 
-    /**
-     * Keeps the text and the Twitch emotes. Mentions, links and cheers are shown as text.
-     */
     private static DanmakuComment toComment(List<?> tokens) {
         List<Object> parts = new ArrayList<>();
         StringBuilder text = new StringBuilder();
-        for (Object token : tokens) {
+        for (int i = 0, n = tokens.size(); i < n; i++) {
+            Object token = tokens.get(i);
             String emoteId = ChatMessages.emoteTokenId(token);
             if (emoteId != null) {
                 addText(parts, text);
@@ -159,7 +160,6 @@ final class DanmakuMessages {
         return parts.isEmpty() ? null : new DanmakuComment(parts.toArray());
     }
 
-    /** 文字数。スタンプは1個を1文字として数える */
     private static int length(DanmakuComment comment) {
         int n = 0;
         for (Object part : comment.parts) {
@@ -170,23 +170,32 @@ final class DanmakuMessages {
     }
 
     private static void addText(List<Object> parts, StringBuilder text) {
-        if (text.length() == 0) return;
-        parts.add(text.toString().replaceAll("\\s", " "));
+        int len = text.length();
+        if (len == 0) return;
+        for (int i = 0; i < len; i++) {
+            char c = text.charAt(i);
+            if (c != ' ' && Character.isWhitespace(c)) {
+                text.setCharAt(i, ' ');
+            }
+        }
+        parts.add(text.toString());
         text.setLength(0);
     }
 
-    /** Removes leading and trailing spaces, and parts left empty. */
     private static void trimEnds(List<Object> parts) {
         if (!parts.isEmpty() && parts.get(0) instanceof String first) {
-            String trimmed = first.replaceAll("^ +", "");
-            if (trimmed.isEmpty()) parts.remove(0);
-            else parts.set(0, trimmed);
+            int start = 0;
+            int len = first.length();
+            while (start < len && first.charAt(start) == ' ') start++;
+            if (start >= len) parts.remove(0);
+            else if (start > 0) parts.set(0, first.substring(start));
         }
         int last = parts.size() - 1;
         if (last >= 0 && parts.get(last) instanceof String end) {
-            String trimmed = end.replaceAll(" +$", "");
-            if (trimmed.isEmpty()) parts.remove(last);
-            else parts.set(last, trimmed);
+            int limit = end.length();
+            while (limit > 0 && end.charAt(limit - 1) == ' ') limit--;
+            if (limit == 0) parts.remove(last);
+            else if (limit < end.length()) parts.set(last, end.substring(0, limit));
         }
     }
 }

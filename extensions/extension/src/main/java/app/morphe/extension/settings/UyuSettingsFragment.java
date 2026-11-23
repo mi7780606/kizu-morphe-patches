@@ -1,7 +1,6 @@
 package app.morphe.extension.settings;
 
 import android.app.Activity;
-import android.app.AlertDialog;
 import android.content.Intent;
 import android.os.Bundle;
 import android.preference.Preference;
@@ -161,7 +160,7 @@ public class UyuSettingsFragment extends PreferenceFragment {
     }
 
     private void addSectionLink(PreferenceScreen screen, String linkedSection, String summary) {
-        Preference preference = new Preference(SettingsUi.preferenceContext(screen.getContext()));
+        Preference preference = TwitchUi.createSectionPreference(screen.getContext());
         preference.setTitle(title(linkedSection));
         preference.setSummary(summary);
         preference.setOnPreferenceClickListener(clicked -> {
@@ -172,10 +171,10 @@ public class UyuSettingsFragment extends PreferenceFragment {
         screen.addPreference(preference);
     }
 
-        private void addGeneralSettings(PreferenceScreen screen) {
+    private void addGeneralSettings(PreferenceScreen screen) {
         addSwitch(screen, Settings.HIDE_STORIES, "Hide Stories",
                 "Hide the Stories shelf from Twitch's Following/Home feed.");
-        Preference homeTab = new Preference(screen.getContext());
+        Preference homeTab = new Preference(SettingsUi.preferenceContext(screen.getContext()));
         homeTab.setTitle("Default Home Tab");
         homeTab.setSummary(homeTabName(Settings.DEFAULT_HOME_TAB.get()));
         homeTab.setOnPreferenceClickListener(clicked -> {
@@ -185,7 +184,7 @@ public class UyuSettingsFragment extends PreferenceFragment {
             String[] values = {"following", "live", "clips"};
             String current = Settings.DEFAULT_HOME_TAB.get();
             int selected = homeTabIndex(current);
-            new AlertDialog.Builder(activity)
+            SettingsUi.dialog(activity)
                     .setTitle("Default Home Tab")
                     .setSingleChoiceItems(names, selected, (dialog, which) -> {
                         Settings.DEFAULT_HOME_TAB.save(values[which]);
@@ -225,7 +224,7 @@ public class UyuSettingsFragment extends PreferenceFragment {
                 "Hides the ranking of top gifters and cheerers above chat.");
         addSwitch(screen, Settings.HIDE_SUBSCRIPTION_PROMOTIONS, "Hide subscription promotions",
                 "Hides the banners that advertise subscription and gift discounts and SUBtember, above the player and above chat, and the banner that advertises Turbo.");
-        Preference note = new Preference(screen.getContext());
+        Preference note = new Preference(SettingsUi.preferenceContext(screen.getContext()));
         note.setSummary("Items you show again appear the next time you open a stream.");
         note.setSelectable(false);
         screen.addPreference(note);
@@ -246,7 +245,7 @@ public class UyuSettingsFragment extends PreferenceFragment {
         addSlider(screen, Settings.DANMAKU_AREA, 5, "Area", value -> "Top " + value + "% of the video");
         addSlider(screen, Settings.DANMAKU_DURATION, 500, "Time on screen", value -> String.format(Locale.ROOT, "%.1f seconds", value / 1000f));
         addSlider(screen, Settings.DANMAKU_MAX_COMMENTS, 10, "Maximum comments", value -> "Up to " + value + " comments on screen at once. Later messages are skipped until there is room.");
-        fontPreference = new FontPreference(getActivity(), this, Settings.DANMAKU_FONT);
+        fontPreference = new FontPreference(SettingsUi.preferenceContext(getActivity()), this, Settings.DANMAKU_FONT);
         fontPreference.setTitle("Font");
         screen.addPreference(fontPreference);
         addSlider(screen, Settings.DANMAKU_FONT_WEIGHT, 100, "Font weight", value -> value + " (" + WEIGHT_NAMES[value / 100 - 1] + ")");
@@ -260,7 +259,7 @@ public class UyuSettingsFragment extends PreferenceFragment {
         addSwitch(screen, Settings.BLOCK_ADS, "Block ads",
                 "Blocks live, VOD and display ads. Ads that are part of the stream itself are covered with a black screen and muted until they end.");
 
-        Preference proxySelector = new Preference(screen.getContext());
+        Preference proxySelector = new Preference(SettingsUi.preferenceContext(screen.getContext()));
         proxySelector.setTitle("Proxy");
         proxySelector.setSummary(proxyName(Settings.ADS_PROXY_URL.get()));
         proxySelector.setOnPreferenceClickListener(clicked -> {
@@ -268,7 +267,7 @@ public class UyuSettingsFragment extends PreferenceFragment {
             if (activity == null) return true;
             String current = Settings.ADS_PROXY_URL.get();
             int selected = proxyIndex(current);
-            new AlertDialog.Builder(activity)
+            SettingsUi.dialog(activity)
                     .setTitle("Ad-blocking proxy")
                     .setSingleChoiceItems(PROXY_NAMES, selected, (dialog, which) -> {
                         Settings.ADS_PROXY_URL.save(PROXY_URLS[which]);
@@ -287,7 +286,7 @@ public class UyuSettingsFragment extends PreferenceFragment {
         proxy.setTitle("Proxy URL");
         screen.addPreference(proxy);
 
-        Preference note = new Preference(screen.getContext());
+        Preference note = new Preference(SettingsUi.preferenceContext(screen.getContext()));
         note.setSummary("Optional. Live streams are loaded through the selected proxy, which can remove the ads that are part of the stream. {channel} is replaced with the channel name; without it, the name is added to the end.\n\nPublic proxies can go offline or change behavior. The proxy operator can see which channels you watch. If the proxy fails, uyu shows Proxy failed and falls back to Twitch while device-side ad blocking remains active.");
         note.setSelectable(false);
         screen.addPreference(note);
@@ -317,7 +316,7 @@ public class UyuSettingsFragment extends PreferenceFragment {
 
     private void addChatSettings(PreferenceScreen screen) {
         addSwitch(screen, Settings.CHAT_DELETED_MESSAGES, "Deleted messages", "Control whether deleted chat messages remain visible locally.");        
-        Preference deletedMessageStyle = new Preference(screen.getContext());
+        Preference deletedMessageStyle = new Preference(SettingsUi.preferenceContext(screen.getContext()));
         deletedMessageStyle.setTitle("Deleted message style");
         deletedMessageStyle.setSummary(deletedMessageStyleName(Settings.CHAT_DELETED_MESSAGES_STYLE.get()));
         deletedMessageStyle.setOnPreferenceClickListener(clicked -> {
@@ -326,7 +325,7 @@ public class UyuSettingsFragment extends PreferenceFragment {
             String[] names = {"Mod", "Strikethrough", "Gray"};
             String[] values = {"mod", "strikethrough", "grey"};
             int selected = deletedMessageStyleIndex(Settings.CHAT_DELETED_MESSAGES_STYLE.get());
-            new AlertDialog.Builder(activity)
+            SettingsUi.dialog(activity)
                     .setTitle("Deleted message style")
                     .setSingleChoiceItems(names, selected, (dialog, which) -> {
                         Settings.CHAT_DELETED_MESSAGES_STYLE.save(values[which]);
@@ -423,8 +422,11 @@ public class UyuSettingsFragment extends PreferenceFragment {
         if (!SECTION_DANMAKU.equals(section)) return list;
         LinearLayout layout = new LinearLayout(getActivity());
         layout.setOrientation(LinearLayout.VERTICAL);
-        LinearLayout.LayoutParams previewParams = new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
+        LinearLayout.LayoutParams previewParams = new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
         previewParams.gravity = Gravity.CENTER_HORIZONTAL;
+        int margin = SettingsUi.dp(getActivity(), 12f);
+        previewParams.setMargins(margin, margin, margin, SettingsUi.dp(getActivity(), 6f));
         layout.addView(new DanmakuPreview(getActivity()), previewParams);
         layout.addView(list, new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, 0, 1f));
         return layout;
@@ -503,7 +505,7 @@ public class UyuSettingsFragment extends PreferenceFragment {
         Preference key = new SecretTextPreference(SettingsUi.preferenceContext(screen.getContext()), Settings.WATCHLOG_API_KEY);
         key.setTitle("APIキー");
         screen.addPreference(key);
-        Preference note = new Preference(screen.getContext());
+        Preference note = new Preference(SettingsUi.preferenceContext(screen.getContext()));
         note.setSummary("送るのはチャンネル名・秒数・端末名だけです。通信できないときは最大6時間分まで溜めて再送します。設定のエクスポートにはAPIキーも含まれるので、ファイルの扱いに注意してください。");
         note.setSelectable(false);
         screen.addPreference(note);

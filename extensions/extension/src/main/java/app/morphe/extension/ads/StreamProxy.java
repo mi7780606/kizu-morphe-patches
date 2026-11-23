@@ -1,5 +1,6 @@
 package app.morphe.extension.ads;
 
+import android.app.Activity;
 import android.content.Context;
 import android.net.Uri;
 import android.os.Handler;
@@ -13,26 +14,25 @@ import java.util.Collections;
 import java.util.LinkedHashMap;
 import java.util.Locale;
 import java.util.Map;
+import java.util.concurrent.ConcurrentHashMap;
 
 import app.morphe.extension.Utils;
 import app.morphe.extension.settings.Settings;
+import app.morphe.extension.settings.TwitchUi;
 
 /**
  * Loads live streams through the proxy the user entered, if any. The proxy returns the stream's
  * playlist; the video itself still comes from Twitch.
- * <p>
- * If the proxy fails, the stream is loaded from Twitch as usual and "Proxy failed" is shown.
  */
 final class StreamProxy {
-    /** Query Twitch's web player sends, added when the proxy URL has no {channel} placeholder. */
     private static final String DEFAULT_QUERY = "?allow_source=true&allow_audio_only=true&fast_bread=true";
     private static final String CHANNEL_PLACEHOLDER = "{channel}";
     private static final String PLAYLIST_SUFFIX = ".m3u8";
     private static final int MAX_PENDING = 16;
 
     private static final Handler MAIN_HANDLER = new Handler(Looper.getMainLooper());
+    private static final ConcurrentHashMap<Class<?>, Method> MESSAGE_METHODS = new ConcurrentHashMap<>();
 
-    /** Proxy URLs handed out and not loaded yet, mapped to the Twitch URL they replace. */
     private static final Map<String, Uri> originals = Collections.synchronizedMap(
             new LinkedHashMap<String, Uri>() {
                 @Override
@@ -41,13 +41,8 @@ final class StreamProxy {
                 }
             });
 
-    private StreamProxy() {
-    }
+    private StreamProxy() {}
 
-    /**
-     * @param usherUri Twitch's playlist URL of the stream, ending in [channel].m3u8.
-     * @return The proxy's URL of the stream, or usherUri if no proxy is set.
-     */
     static Uri override(Uri usherUri) {
         String proxy = Settings.ADS_PROXY_URL.get().trim();
         if (proxy.isEmpty()) proxy = "https://eu2.luminous.dev/live/{channel}?allow_source=true&allow_audio_only=true";
@@ -75,13 +70,6 @@ final class StreamProxy {
         return uri;
     }
 
-    /**
-     * Preloads a stream. A proxy URL is loaded with a listener that loads the Twitch URL
-     * instead if the proxy fails.
-     *
-     * @param mediaPlayer Amazon IVS's MediaPlayer.
-     * @param listener    Twitch's Source.Listener for the result.
-     */
     static void preload(Object mediaPlayer, Uri uri, Object listener) {
         Object used = listener;
         try {
@@ -104,8 +92,13 @@ final class StreamProxy {
             if (method.getName().equals("onError")) {
                 Utils.logInfo("Proxy failed: " + errorMessage(args));
                 MAIN_HANDLER.post(() -> {
-                    Context context = Utils.getContext();
-                    if (context != null) Toast.makeText(context, "Proxy failed", Toast.LENGTH_SHORT).show();
+                    Activity activity = Utils.getCurrentActivity();
+                    if (activity != null && !activity.isFinishing() && !activity.isDestroyed()) {
+                        TwitchUi.showSnackbar(activity, "Proxy failed", null, 2000L);
+                    } else {
+                        Context context = Utils.getContext();
+                        if (context != null) Toast.makeText(context, "Proxy failed", Toast.LENGTH_SHORT).show();
+                    }
                     PlayerEvents.preload(mediaPlayer, original, listener);
                 });
                 return null;
@@ -118,12 +111,17 @@ final class StreamProxy {
         });
     }
 
-    /** The message of the Source.LoadError passed to onError. */
     private static String errorMessage(Object[] args) {
         Object error = args == null || args.length == 0 ? null : args[0];
         if (error == null) return "unknown error";
         try {
-            return String.valueOf(error.getClass().getMethod("getMessage").invoke(error));
+            Class<?> type = error.getClass();
+            Method m = MESSAGE_METHODS.get(type);
+            if (m == null) {
+                m = type.getMethod("getMessage");
+                MESSAGE_METHODS.putIfAbsent(type, m);
+            }
+            return String.valueOf(m.invoke(error));
         } catch (Exception ex) {
             return error.toString();
         }

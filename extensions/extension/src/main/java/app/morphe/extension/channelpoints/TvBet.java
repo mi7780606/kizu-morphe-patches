@@ -1,35 +1,34 @@
 package app.morphe.extension.channelpoints;
 
 import android.app.Activity;
-import android.app.AlertDialog;
 import android.app.Dialog;
-import android.graphics.drawable.ColorDrawable;
-import android.graphics.drawable.GradientDrawable;
-import android.text.Editable;
-import android.text.TextWatcher;
-import android.view.Gravity;
-import android.view.ViewGroup;
-import android.view.Window;
-import android.view.WindowManager;
-import android.widget.ImageView;
-import android.widget.Toast;
+import android.content.ClipData;
+import android.content.ClipboardManager;
 import android.content.Context;
 import android.content.Intent;
 import android.graphics.Color;
+import android.graphics.Typeface;
+import android.graphics.drawable.ColorDrawable;
 import android.net.Uri;
 import android.os.Handler;
 import android.os.Looper;
+import android.text.Editable;
 import android.text.InputType;
+import android.text.TextWatcher;
+import android.util.DisplayMetrics;
 import android.util.Log;
 import android.util.TypedValue;
+import android.view.Gravity;
 import android.view.View;
-import android.widget.Button;
+import android.view.ViewGroup;
+import android.view.Window;
+import android.view.WindowManager;
 import android.widget.EditText;
+import android.widget.ImageView;
 import android.widget.LinearLayout;
-import android.widget.RadioButton;
-import android.widget.RadioGroup;
 import android.widget.ScrollView;
 import android.widget.TextView;
+import android.widget.Toast;
 
 import org.json.JSONArray;
 import org.json.JSONObject;
@@ -40,6 +39,7 @@ import java.net.HttpURLConnection;
 import java.net.URL;
 import java.net.URLEncoder;
 import java.nio.charset.StandardCharsets;
+import java.time.Instant;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.HashSet;
@@ -47,7 +47,13 @@ import java.util.List;
 import java.util.Locale;
 import java.util.Set;
 import java.util.UUID;
+import java.util.concurrent.ScheduledFuture;
+import java.util.concurrent.TimeUnit;
 
+import app.morphe.extension.KizuRuntime;
+import app.morphe.extension.settings.SettingsUi;
+import app.morphe.extension.settings.TwitchUi;
+import io.github.bakwudo.uyu.extension.Utils;
 import io.github.bakwudo.uyu.extension.settings.KizuSettings;
 
 /**
@@ -66,19 +72,23 @@ public final class TvBet {
 
     private static final String BET_MUTATION =
             "mutation MakeCommunityPointsPredictionMutation($input: MakePredictionInput!) {"
-            + " makePrediction(input: $input) { error { code maxPointsPerEvent userPointsSpent }"
-            + " prediction { id points outcome { id } } } }";
+                    + " makePrediction(input: $input) { error { code maxPointsPerEvent userPointsSpent }"
+                    + " prediction { id points outcome { id } } } }";
     private static final String BET_HASH = "b44682ecc88358817009f20e69d75081b1e58825bb40aa53d5dbadcc17c881d8";
+
+    private static final int BLUE = 0xFF387AFF;
+    private static final int PINK = 0xFFF5009B;
 
     private static final Handler MAIN = new Handler(Looper.getMainLooper());
     private static volatile boolean loginRunning;
+    private static volatile long loginSessionSeq;
 
     private TvBet() {}
 
     public static void open(Context c) {
         try {
             if (KizuSettings.TV_TOKEN.get().trim().isEmpty()) showLogin(c);
-            else load(c);
+            else load(c, null, null, null);
         } catch (Throwable t) {
             Log.e(TAG, "open failed", t);
         }
@@ -88,30 +98,73 @@ public final class TvBet {
 
     private static void showLogin(Context c) {
         float d = density(c);
-        LinearLayout box = box(c, d);
-        TextView msg = text(c, d, "初回だけ、Kizu用にログインします（Android TV版としてログイン）。\n準備中…", 14);
+        LinearLayout box = new LinearLayout(c);
+        box.setOrientation(LinearLayout.VERTICAL);
+
+        TextView msg = label(c, "初回だけ、Kizu用にログインします（Android TV版としてログイン）。\n準備中…",
+                14f, SettingsUi.secondaryTextColor(c), false);
         box.addView(msg);
-        TextView code = text(c, d, "", 30);
-        code.setTextColor(0xFFBF94FF);
-        code.setTextIsSelectable(true);
-        box.addView(code);
-        Button openBtn = new Button(c);
-        openBtn.setText("twitch.tv/activate を開く");
+
+        LinearLayout codeCard = new LinearLayout(c);
+        codeCard.setOrientation(LinearLayout.HORIZONTAL);
+        codeCard.setGravity(Gravity.CENTER_VERTICAL);
+        codeCard.setPadding(dp(d, 14), dp(d, 10), dp(d, 10), dp(d, 10));
+        codeCard.setBackground(TwitchUi.roundedRect(
+                SettingsUi.inputBackgroundColor(c),
+                10 * d,
+                Math.max(1, dp(d, 1)),
+                SettingsUi.borderColor(c)));
+        LinearLayout.LayoutParams codeCardLp = new LinearLayout.LayoutParams(-1, -2);
+        codeCardLp.topMargin = dp(d, 12);
+        codeCard.setVisibility(View.GONE);
+
+        TextView codeView = label(c, "", 24f, SettingsUi.accentColor(c), true);
+        codeView.setTypeface(Typeface.MONOSPACE, Typeface.BOLD);
+        codeView.setTextIsSelectable(true);
+        codeView.setLetterSpacing(0.08f);
+        codeCard.addView(codeView, new LinearLayout.LayoutParams(0, -2, 1f));
+
+        TextView copyBtn = TwitchUi.createSecondaryButton(c, "コピー");
+        copyBtn.setTextSize(TypedValue.COMPLEX_UNIT_SP, 12f);
+        copyBtn.setPadding(dp(d, 12), dp(d, 6), dp(d, 12), dp(d, 6));
+        codeCard.addView(copyBtn);
+        box.addView(codeCard, codeCardLp);
+
+        TextView openBtn = TwitchUi.createPrimaryButton(c, "twitch.tv/activate を開く");
         openBtn.setEnabled(false);
-        box.addView(openBtn);
+        openBtn.setAlpha(0.5f);
+        LinearLayout.LayoutParams openLp = new LinearLayout.LayoutParams(-1, -2);
+        openLp.topMargin = dp(d, 12);
+        box.addView(openBtn, openLp);
 
         final boolean[] closed = {false};
-        AlertDialog dlg = new AlertDialog.Builder(c, android.R.style.Theme_Material_Dialog_Alert)
-                .setTitle("Kizu用ログイン")
-                .setView(box)
-                .setNegativeButton("閉じる", null)
-                .create();
-        dlg.setOnDismissListener(x -> closed[0] = true);
-        dlg.show();
+        final ScheduledFuture<?>[] pollTask = {null};
+        final long session = ++loginSessionSeq;
 
-        if (loginRunning) { msg.setText("ログイン処理中です。少し待ってから開き直してください。"); return; }
+        Dialog dlg = TwitchUi.showThemedDialog(
+                c,
+                "Kizu用ログイン",
+                box,
+                null,
+                null,
+                null,
+                null,
+                "閉じる");
+
+        dlg.setOnDismissListener(x -> {
+            closed[0] = true;
+            ScheduledFuture<?> task = pollTask[0];
+            if (task != null) task.cancel(false);
+            if (loginSessionSeq == session) loginRunning = false;
+        });
+
+        if (loginRunning) {
+            msg.setText("ログイン処理中です。少し待ってから開き直してください。");
+            return;
+        }
         loginRunning = true;
-        new Thread(() -> {
+
+        KizuRuntime.ioExecutor().execute(() -> {
             try {
                 String r = form("https://id.twitch.tv/oauth2/device",
                         "client_id=" + CLIENT_ID + "&scopes=" + URLEncoder.encode(SCOPES, "UTF-8"))[1];
@@ -121,54 +174,119 @@ public final class TvBet {
                 String uri = j.optString("verification_uri", "https://www.twitch.tv/activate");
                 int interval = Math.max(2, j.optInt("interval", 5));
                 long until = System.currentTimeMillis() + j.optInt("expires_in", 1800) * 1000L;
+
                 MAIN.post(() -> {
+                    if (closed[0]) return;
                     msg.setText("下のコードを twitch.tv/activate で入力して「許可」を押してください。許可すると自動で次へ進みます。");
-                    code.setText(userCode);
+                    codeView.setText(userCode);
+                    codeCard.setVisibility(View.VISIBLE);
+                    copyBtn.setOnClickListener(v -> {
+                        try {
+                            ClipboardManager cm = (ClipboardManager) c.getSystemService(Context.CLIPBOARD_SERVICE);
+                            if (cm != null) {
+                                cm.setPrimaryClip(ClipData.newPlainText("Twitch activation code", userCode));
+                                Toast.makeText(c, "コードをコピーしました", Toast.LENGTH_SHORT).show();
+                            }
+                        } catch (Throwable ignored) {}
+                    });
                     openBtn.setEnabled(true);
+                    openBtn.setAlpha(1f);
                     openBtn.setOnClickListener(v -> {
                         try {
-                            Intent i = new Intent(Intent.ACTION_VIEW, Uri.parse(uri.contains("?") ? uri : uri + "?device-code=" + userCode));
+                            Intent i = new Intent(Intent.ACTION_VIEW,
+                                    Uri.parse(uri.contains("?") ? uri : uri + "?device-code=" + userCode));
                             i.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
                             c.startActivity(i);
                         } catch (Throwable ignored) {}
                     });
                 });
-                while (System.currentTimeMillis() < until && !closed[0]) {
-                    Thread.sleep(interval * 1000L);
-                    String[] t = form("https://id.twitch.tv/oauth2/token",
-                            "client_id=" + CLIENT_ID + "&device_code=" + URLEncoder.encode(deviceCode, "UTF-8")
-                                    + "&grant_type=" + URLEncoder.encode("urn:ietf:params:oauth:grant-type:device_code", "UTF-8"));
-                    JSONObject tj = parse(t[1]);
-                    if (tj != null && tj.has("access_token")) {
-                        KizuSettings.TV_TOKEN.save(tj.getString("access_token"));
-                        MAIN.post(() -> { try { dlg.dismiss(); } catch (Throwable ignored) {} load(c); });
-                        return;
-                    }
-                    String m = tj == null ? "" : tj.optString("message", "");
-                    if (m.contains("pending")) continue;
-                    if (m.contains("slow")) { interval += 2; continue; }
-                    if (!m.isEmpty()) { final String fm = m; MAIN.post(() -> msg.setText("ログイン失敗: " + fm)); return; }
-                }
+
+                scheduleLoginPoll(c, dlg, msg, closed, pollTask, session, deviceCode, interval, until);
             } catch (Throwable e) {
-                MAIN.post(() -> msg.setText("ログイン失敗: " + e));
-            } finally {
-                loginRunning = false;
+                MAIN.post(() -> {
+                    if (!closed[0]) msg.setText("ログイン失敗: " + e);
+                    if (loginSessionSeq == session) loginRunning = false;
+                });
             }
-        }, "kizu-tv-login").start();
+        });
+    }
+
+    private static void scheduleLoginPoll(
+            Context c,
+            Dialog dlg,
+            TextView msg,
+            boolean[] closed,
+            ScheduledFuture<?>[] pollTask,
+            long session,
+            String deviceCode,
+            int intervalSec,
+            long untilMs
+    ) {
+        if (closed[0] || loginSessionSeq != session) {
+            if (loginSessionSeq == session) loginRunning = false;
+            return;
+        }
+        if (System.currentTimeMillis() >= untilMs) {
+            MAIN.post(() -> {
+                if (!closed[0]) msg.setText("認証コードの有効期限が切れました。閉じてもう一度試してください。");
+                if (loginSessionSeq == session) loginRunning = false;
+            });
+            return;
+        }
+        pollTask[0] = KizuRuntime.scheduler().schedule(() -> KizuRuntime.ioExecutor().execute(() -> {
+            if (closed[0] || loginSessionSeq != session) {
+                if (loginSessionSeq == session) loginRunning = false;
+                return;
+            }
+            try {
+                String[] t = form("https://id.twitch.tv/oauth2/token",
+                        "client_id=" + CLIENT_ID + "&device_code=" + URLEncoder.encode(deviceCode, "UTF-8")
+                                + "&grant_type=" + URLEncoder.encode("urn:ietf:params:oauth:grant-type:device_code", "UTF-8"));
+                JSONObject tj = parse(t[1]);
+                if (tj != null && tj.has("access_token")) {
+                    KizuSettings.TV_TOKEN.save(tj.getString("access_token"));
+                    if (loginSessionSeq == session) loginRunning = false;
+                    MAIN.post(() -> {
+                        try { dlg.dismiss(); } catch (Throwable ignored) {}
+                        load(c, null, null, null);
+                    });
+                    return;
+                }
+                String m = tj == null ? "" : tj.optString("message", "");
+                if (m.contains("pending")) {
+                    scheduleLoginPoll(c, dlg, msg, closed, pollTask, session, deviceCode, intervalSec, untilMs);
+                    return;
+                }
+                if (m.contains("slow")) {
+                    scheduleLoginPoll(c, dlg, msg, closed, pollTask, session, deviceCode, intervalSec + 2, untilMs);
+                    return;
+                }
+                if (!m.isEmpty()) {
+                    final String fm = m;
+                    if (loginSessionSeq == session) loginRunning = false;
+                    MAIN.post(() -> { if (!closed[0]) msg.setText("ログイン失敗: " + fm); });
+                    return;
+                }
+                scheduleLoginPoll(c, dlg, msg, closed, pollTask, session, deviceCode, intervalSec, untilMs);
+            } catch (Throwable e) {
+                if (loginSessionSeq == session) loginRunning = false;
+                MAIN.post(() -> { if (!closed[0]) msg.setText("ログイン失敗: " + e); });
+            }
+        }), intervalSec, TimeUnit.SECONDS);
     }
 
     // ---------- 状態の取得 ----------
 
     private static final String EVENT_FIELDS =
             "fragment E on PredictionEvent { id status title createdAt predictionWindowSeconds winningOutcome { id }"
-            + " outcomes { id title color totalPoints totalUsers } }";
+                    + " outcomes { id title color totalPoints totalUsers } }";
     private static final String RECENT_FIELDS =
             "recentPredictions { id points pointsWon result predictedAt outcome { id }"
-            + " event { id title status winningOutcome { id } outcomes { id title color } } }";
+                    + " event { id title status winningOutcome { id } outcomes { id title color } } }";
     private static final String STATE_QUERY =
             "query KizuPrediction($id: ID!) { user(id: $id) { login displayName stream { createdAt } channel {"
-            + " self { communityPoints { balance } RECENT }"
-            + " activePredictionEvents { ...E } lockedPredictionEvents { ...E } } } } " + EVENT_FIELDS;
+                    + " self { communityPoints { balance } RECENT }"
+                    + " activePredictionEvents { ...E } lockedPredictionEvents { ...E } } } } " + EVENT_FIELDS;
 
     private static final class State {
         String channelId, name, streamStart, error;
@@ -242,45 +360,54 @@ public final class TvBet {
         return null;
     }
 
-    private static void load(Context c) {
+    private static void load(Context c, Dialog existingDlg, LinearLayout existingRoot, TextView refreshBtn) {
         String channelId = ChannelPoints.currentChannelId();
-        if (channelId == null) { info(c, "予想", "配信を開いてから押してください。"); return; }
-        new Thread(() -> {
+        if (channelId == null) {
+            if (refreshBtn != null) {
+                refreshBtn.setEnabled(true);
+                refreshBtn.setText("更新");
+            }
+            info(c, "予想", "配信を開いてから押してください。");
+            return;
+        }
+        KizuRuntime.ioExecutor().execute(() -> {
             State st = fetchState(channelId);
             MAIN.post(() -> {
                 try {
+                    if (existingDlg != null) {
+                        if (!existingDlg.isShowing()) return;
+                        if (st.error != null) {
+                            if (refreshBtn != null) {
+                                refreshBtn.setEnabled(true);
+                                refreshBtn.setText("更新");
+                            }
+                            info(c, "予想", st.error);
+                        } else {
+                            renderBetContent(c, density(c), existingDlg, existingRoot, st);
+                        }
+                        return;
+                    }
                     if (st.error != null) info(c, "予想", st.error);
                     else showBet(c, st);
                 } catch (Throwable t) {
                     Log.e(TAG, "show failed", t);
+                    if (refreshBtn != null) {
+                        refreshBtn.setEnabled(true);
+                        refreshBtn.setText("更新");
+                    }
                     info(c, "予想", "表示に失敗しました: " + t);
                 }
             });
-        }, "kizu-tv-load").start();
+        });
     }
 
     // ---------- 賭け画面（Twitch風） ----------
-
-    private static final int BG = 0xFF18181B;
-    private static final int CARD = 0xFF26262C;
-    private static final int SUB = 0xFFADADB8;
-    private static final int PURPLE = 0xFFBF94FF;
-    private static final int BLUE = 0xFF387AFF;
-    private static final int PINK = 0xFFF5009B;
 
     private static int colorOf(JSONObject o, int index) {
         String col = o == null ? "" : o.optString("color", "");
         if ("PINK".equalsIgnoreCase(col)) return PINK;
         if ("BLUE".equalsIgnoreCase(col)) return BLUE;
         return index == 1 ? PINK : BLUE;
-    }
-
-    private static GradientDrawable round(int color, float radius, int strokeW, int strokeColor) {
-        GradientDrawable g = new GradientDrawable();
-        g.setColor(color);
-        g.setCornerRadius(radius);
-        if (strokeW > 0) g.setStroke(strokeW, strokeColor);
-        return g;
     }
 
     private static String num(long v) {
@@ -294,91 +421,158 @@ public final class TvBet {
 
         LinearLayout root = new LinearLayout(c);
         root.setOrientation(LinearLayout.VERTICAL);
-        int pad = (int) (16 * d);
-        root.setPadding(pad, pad, pad, pad);
-        root.setBackgroundColor(BG);
+        int pad = dp(d, 16);
+        root.setPadding(pad, dp(d, 2), pad, pad);
+
+        dlg.setOnDismissListener(x -> cancelCountdown(root));
+        renderBetContent(c, d, dlg, root, st);
+
+        ScrollView sv = new ScrollView(c);
+        sv.setFillViewport(true);
+        sv.setBackground(TwitchUi.sheetBackground(c, 16f));
+        sv.setClipToOutline(true);
+        sv.addView(root, new ViewGroup.LayoutParams(-1, -2));
+        dlg.setContentView(sv);
+        placeOverChat(dlg, c, d);
+        dlg.show();
+        placeOverChat(dlg, c, d);
+    }
+
+    private static void renderBetContent(Context c, float d, Dialog dlg, LinearLayout root, State st) {
+        cancelCountdown(root);
+        root.removeAllViews();
+
+        int primary = SettingsUi.primaryTextColor(c);
+        int secondary = SettingsUi.secondaryTextColor(c);
+        int accent = SettingsUi.accentColor(c);
+
+        root.addView(TwitchUi.dragHandle(c));
 
         LinearLayout top = new LinearLayout(c);
         top.setOrientation(LinearLayout.HORIZONTAL);
         top.setGravity(Gravity.CENTER_VERTICAL);
+        top.setPadding(0, dp(d, 4), 0, 0);
         ImageView icon = new ImageView(c);
-        int ic = c.getResources().getIdentifier("ic_prediction_event", "drawable", c.getPackageName());
-        if (ic != 0) { icon.setImageResource(ic); icon.setColorFilter(PURPLE); }
-        top.addView(icon, new LinearLayout.LayoutParams((int) (18 * d), (int) (18 * d)));
-        TextView head = label(c, "  予想" + (st.name != null ? " · " + st.name : ""), 12, SUB, false);
-        top.addView(head, new LinearLayout.LayoutParams(0, -2, 1));
-        TextView close = label(c, "✕", 16, SUB, false);
-        close.setPadding((int) (8 * d), 0, 0, 0);
-        close.setOnClickListener(v -> dlg.dismiss());
-        top.addView(close);
+        int ic = Utils.getResourceId(c, "ic_prediction_event", "drawable");
+        if (ic != 0) {
+            icon.setImageResource(ic);
+            icon.setColorFilter(accent);
+        }
+        top.addView(icon, new LinearLayout.LayoutParams(dp(d, 18), dp(d, 18)));
+        TextView head = label(c, "  予想" + (st.name != null ? " · " + st.name : ""), 12f, secondary, true);
+        top.addView(head, new LinearLayout.LayoutParams(0, -2, 1f));
+        top.addView(TwitchUi.createCloseButton(c, dlg::dismiss));
         root.addView(top);
 
         JSONObject ev = st.event;
         if (ev == null) {
-            root.addView(spaced(label(c, "今は予想がありません", 16, Color.WHITE, true), d, 12));
+            TextView empty = label(c, "今は予想がありません", 16f, primary, true);
+            empty.setPadding(0, dp(d, 16), 0, dp(d, 4));
+            root.addView(empty);
         } else {
             buildEvent(c, d, dlg, root, st, ev);
         }
 
         // フッター
+        LinearLayout.LayoutParams divLp = new LinearLayout.LayoutParams(-1, Math.max(1, dp(d, 0.75f)));
+        divLp.topMargin = dp(d, 14);
+        View div = TwitchUi.divider(c);
+        root.addView(div, divLp);
+
         LinearLayout foot = new LinearLayout(c);
         foot.setOrientation(LinearLayout.HORIZONTAL);
         foot.setGravity(Gravity.CENTER_VERTICAL);
-        foot.setPadding(0, (int) (14 * d), 0, 0);
-        foot.addView(label(c, st.balance >= 0 ? "所持 " + num(st.balance) + " pt" : "", 13, SUB, false),
-                new LinearLayout.LayoutParams(0, -2, 1));
-        TextView refresh = label(c, "更新", 14, PURPLE, true);
-        refresh.setPadding((int) (12 * d), (int) (6 * d), (int) (12 * d), (int) (6 * d));
-        refresh.setOnClickListener(v -> { dlg.dismiss(); load(c); });
+        foot.setPadding(0, dp(d, 8), 0, 0);
+
+        TextView bal = label(c, st.balance >= 0 ? "所持 " + num(st.balance) + " pt" : "", 13f, secondary, false);
+        bal.setFontFeatureSettings("tnum");
+        foot.addView(bal, new LinearLayout.LayoutParams(0, -2, 1f));
+
+        TextView refresh = TwitchUi.createGhostButton(c, "更新", accent);
+        refresh.setPadding(dp(d, 10), dp(d, 6), dp(d, 10), dp(d, 6));
+        refresh.setOnClickListener(v -> {
+            refresh.setEnabled(false);
+            refresh.setText("更新中…");
+            load(c, dlg, root, refresh);
+        });
         foot.addView(refresh);
-        TextView hist = label(c, "履歴", 14, PURPLE, true);
-        hist.setPadding((int) (12 * d), (int) (6 * d), 0, (int) (6 * d));
+
+        TextView hist = TwitchUi.createGhostButton(c, "履歴", accent);
+        hist.setPadding(dp(d, 10), dp(d, 6), dp(d, 4), dp(d, 6));
         hist.setOnClickListener(v -> showHistory(c, st));
         foot.addView(hist);
         root.addView(foot);
 
-        TextView logout = label(c, "Kizu用ログインを解除", 11, 0xFF6E6E78, false);
-        logout.setPadding(0, (int) (10 * d), 0, 0);
-        logout.setOnClickListener(v -> { KizuSettings.TV_TOKEN.save(""); dlg.dismiss(); });
-        root.addView(logout);
+        TextView logout = TwitchUi.createGhostButton(c, "Kizu用ログインを解除", secondary);
+        logout.setTextSize(TypedValue.COMPLEX_UNIT_SP, 11.5f);
+        logout.setTypeface(Typeface.DEFAULT);
+        logout.setGravity(Gravity.LEFT);
+        logout.setPadding(0, dp(d, 6), dp(d, 8), dp(d, 2));
+        logout.setOnClickListener(v -> {
+            KizuSettings.TV_TOKEN.save("");
+            dlg.dismiss();
+        });
+        root.addView(logout, new LinearLayout.LayoutParams(-2, -2));
+    }
 
-        ScrollView sv = new ScrollView(c);
-        sv.setFillViewport(true);
-        sv.addView(root, new ViewGroup.LayoutParams(-1, -2));
-        dlg.setContentView(sv);
-        placeOverChat(dlg, c, sv, root, d);
-        dlg.show();
-        placeOverChat(dlg, c, sv, root, d);
+    private static void cancelCountdown(LinearLayout root) {
+        Object tag = root.getTag();
+        if (tag instanceof Runnable prev) {
+            MAIN.removeCallbacks(prev);
+            root.setTag(null);
+        }
     }
 
     private static void buildEvent(Context c, float d, Dialog dlg, LinearLayout root, State st, JSONObject ev) {
+        int primary = SettingsUi.primaryTextColor(c);
+        int secondary = SettingsUi.secondaryTextColor(c);
+        int cardBg = SettingsUi.alternateBackgroundColor(c);
+        int borderCol = SettingsUi.borderColor(c);
+        boolean dark = SettingsUi.isDark(c);
+
         String status = ev.optString("status");
         boolean active = "ACTIVE".equalsIgnoreCase(status);
+        long endMillis = active ? parseEventEndMillis(ev) : -1L;
+
+        TextView titleView = label(c, ev.optString("title"), 17f, primary, true);
+        titleView.setPadding(0, dp(d, 8), 0, 0);
+        root.addView(titleView);
+
         String state;
         if (active) {
-            long left = secondsLeft(ev);
-            state = left >= 0 ? String.format(Locale.US, "受付中 · 残り %d:%02d", left / 60, left % 60) : "受付中";
-        } else if ("LOCKED".equalsIgnoreCase(status)) state = "締め切り · 結果待ち";
-        else state = status;
-        root.addView(spaced(label(c, ev.optString("title"), 17, Color.WHITE, true), d, 10));
-        TextView stateView = label(c, state, 13, active ? 0xFF00C85A : SUB, true);
-        root.addView(spaced(stateView, d, 2));
-        // 残り時間を1秒ごとに更新（ダイアログ表示中だけ）
-        if (active && secondsLeft(ev) >= 0) {
+            if (endMillis > 0L) {
+                long left = Math.max(0L, (endMillis - System.currentTimeMillis()) / 1000L);
+                state = String.format(Locale.US, "受付中 · 残り %d:%02d", left / 60, left % 60);
+            } else {
+                state = "受付中";
+            }
+        } else if ("LOCKED".equalsIgnoreCase(status)) {
+            state = "締め切り · 結果待ち";
+        } else {
+            state = status;
+        }
+        TextView stateView = label(c, state, 13f, active ? SettingsUi.successColor() : secondary, true);
+        stateView.setFontFeatureSettings("tnum");
+        stateView.setPadding(0, dp(d, 2), 0, 0);
+        root.addView(stateView);
+
+        // 残り時間を1秒ごとに更新（ダイアログ表示中だけ、endMillis を事前計算）
+        if (active && endMillis > 0L) {
             Runnable tick = new Runnable() {
                 @Override public void run() {
                     if (!dlg.isShowing()) return;
-                    long left = secondsLeft(ev);
-                    if (left > 0) {
+                    long left = Math.max(0L, (endMillis - System.currentTimeMillis()) / 1000L);
+                    if (left > 0L) {
                         stateView.setText(String.format(Locale.US, "受付中 · 残り %d:%02d（%d秒）", left / 60, left % 60, left));
-                        stateView.setTextColor(left <= 10 ? 0xFFEB0400 : 0xFF00C85A);
-                        MAIN.postDelayed(this, 1000);
+                        stateView.setTextColor(left <= 10 ? SettingsUi.dangerColor() : SettingsUi.successColor());
+                        MAIN.postDelayed(this, 1000L);
                     } else {
                         stateView.setText("締め切り · 結果待ち");
-                        stateView.setTextColor(SUB);
+                        stateView.setTextColor(secondary);
                     }
                 }
             };
+            root.setTag(tick);
             MAIN.post(tick);
         }
 
@@ -389,54 +583,103 @@ public final class TvBet {
             JSONObject o = outs.optJSONObject(i);
             if (o != null) total += Math.max(0, o.optLong("totalPoints"));
         }
+
+        // Twitch風割合バー
+        if (n >= 2) {
+            LinearLayout bar = new LinearLayout(c);
+            bar.setOrientation(LinearLayout.HORIZONTAL);
+            bar.setBackground(TwitchUi.roundedRect(borderCol, dp(d, 3), 0, 0));
+            bar.setClipToOutline(true);
+            for (int i = 0; i < n; i++) {
+                JSONObject o = outs.optJSONObject(i);
+                if (o == null) continue;
+                int col = colorOf(o, i);
+                long op = Math.max(0, o.optLong("totalPoints"));
+                float weight = total > 0 ? Math.max(0.02f, (float) op) : 1f;
+                int segColor = total > 0 ? col : Color.argb(0x66, Color.red(col), Color.green(col), Color.blue(col));
+                View seg = new View(c);
+                seg.setBackgroundColor(segColor);
+                LinearLayout.LayoutParams sp = new LinearLayout.LayoutParams(0, -1, weight);
+                if (i > 0) sp.leftMargin = Math.max(1, dp(d, 1.5f));
+                bar.addView(seg, sp);
+            }
+            LinearLayout.LayoutParams barLp = new LinearLayout.LayoutParams(-1, dp(d, 6));
+            barLp.topMargin = dp(d, 10);
+            root.addView(bar, barLp);
+        }
+
         JSONObject mine = myPrediction(st, ev.optString("id"));
-        String mineOutcome = mine == null || mine.optJSONObject("outcome") == null ? null : mine.optJSONObject("outcome").optString("id");
+        String mineOutcome = mine == null || mine.optJSONObject("outcome") == null
+                ? null : mine.optJSONObject("outcome").optString("id");
 
         final int[] selected = {-1};
         final LinearLayout[] cards = new LinearLayout[n];
         LinearLayout list = new LinearLayout(c);
         list.setOrientation(n == 2 ? LinearLayout.HORIZONTAL : LinearLayout.VERTICAL);
-        list.setPadding(0, (int) (12 * d), 0, 0);
+        list.setPadding(0, dp(d, 10), 0, 0);
+        int cp = dp(d, 12);
         for (int i = 0; i < n; i++) {
             JSONObject o = outs.optJSONObject(i);
             if (o == null) continue;
             int col = colorOf(o, i);
             long op = Math.max(0, o.optLong("totalPoints"));
             int pct = total > 0 ? (int) Math.round(op * 100.0 / total) : 0;
+
             LinearLayout card = new LinearLayout(c);
             card.setOrientation(LinearLayout.VERTICAL);
-            int cp = (int) (10 * d);
             card.setPadding(cp, cp, cp, cp);
-            card.setBackground(round(CARD, 8 * d, (int) (2 * d), CARD));
-            TextView t = label(c, o.optString("title"), 14, Color.WHITE, true);
+            card.setBackground(TwitchUi.ripple(
+                    c,
+                    TwitchUi.roundedRect(cardBg, 10 * d, Math.max(1, dp(d, 1)), borderCol),
+                    10 * d));
+
+            TextView t = label(c, o.optString("title"), 14f, primary, true);
             t.setMaxLines(2);
             card.addView(t);
-            card.addView(label(c, pct + "%", 24, col, true));
+
+            TextView pctView = label(c, pct + "%", 23f, col, true);
+            pctView.setFontFeatureSettings("tnum");
+            pctView.setPadding(0, dp(d, 2), 0, 0);
+            card.addView(pctView);
+
             String ratio = op > 0 ? String.format(Locale.US, "1:%.2f", (double) total / op) : "1:—";
-            card.addView(label(c, "🏆 " + ratio, 13, col, true));
-            card.addView(label(c, "● " + num(op) + " pt", 12, SUB, false));
-            card.addView(label(c, "👤 " + num(o.optInt("totalUsers")) + "人", 12, SUB, false));
+            TextView ratioView = label(c, "倍率 " + ratio, 12.5f, col, true);
+            ratioView.setFontFeatureSettings("tnum");
+            card.addView(ratioView);
+
+            TextView ptsView = label(c, num(op) + " pt · " + num(o.optInt("totalUsers")) + "人",
+                    11.5f, secondary, false);
+            ptsView.setFontFeatureSettings("tnum");
+            ptsView.setPadding(0, dp(d, 2), 0, 0);
+            card.addView(ptsView);
+
             if (o.optString("id").equals(mineOutcome)) {
-                TextView m = label(c, "あなた " + num(mine.optLong("points")) + " pt", 12, Color.WHITE, true);
-                m.setPadding((int) (6 * d), (int) (2 * d), (int) (6 * d), (int) (2 * d));
-                m.setBackground(round(col, 4 * d, 0, 0));
+                TextView m = label(c, "あなた " + num(mine.optLong("points")) + " pt", 11.5f, Color.WHITE, true);
+                m.setFontFeatureSettings("tnum");
+                m.setPadding(dp(d, 7), dp(d, 2), dp(d, 7), dp(d, 2));
+                m.setBackground(TwitchUi.roundedRect(col, 6 * d, 0, 0));
                 LinearLayout.LayoutParams mp = new LinearLayout.LayoutParams(-2, -2);
-                mp.topMargin = (int) (6 * d);
+                mp.topMargin = dp(d, 6);
                 card.addView(m, mp);
             }
+
             LinearLayout.LayoutParams lp = n == 2
-                    ? new LinearLayout.LayoutParams(0, -1, 1)
+                    ? new LinearLayout.LayoutParams(0, -1, 1f)
                     : new LinearLayout.LayoutParams(-1, -2);
-            if (n == 2 && i == 0) lp.rightMargin = (int) (6 * d);
-            if (n == 2 && i == 1) lp.leftMargin = (int) (6 * d);
-            if (n != 2 && i > 0) lp.topMargin = (int) (8 * d);
+            if (n == 2 && i == 0) lp.rightMargin = dp(d, 5);
+            if (n == 2 && i == 1) lp.leftMargin = dp(d, 5);
+            if (n != 2 && i > 0) lp.topMargin = dp(d, 8);
             cards[i] = card;
             list.addView(card, lp);
         }
         root.addView(list);
 
         if (!active) {
-            if (mine == null) root.addView(spaced(label(c, "この予想には賭けていません", 13, SUB, false), d, 12));
+            if (mine == null) {
+                TextView notBet = label(c, "この予想には賭けていません", 13f, secondary, false);
+                notBet.setPadding(0, dp(d, 10), 0, 0);
+                root.addView(notBet);
+            }
             return;
         }
 
@@ -444,26 +687,27 @@ public final class TvBet {
         LinearLayout amount = new LinearLayout(c);
         amount.setOrientation(LinearLayout.HORIZONTAL);
         amount.setGravity(Gravity.CENTER_VERTICAL);
-        amount.setPadding(0, (int) (14 * d), 0, 0);
-        EditText pts = new EditText(c);
+        amount.setPadding(0, dp(d, 14), 0, 0);
+        EditText pts = TwitchUi.createPillInput(c, "ポイント");
         pts.setInputType(InputType.TYPE_CLASS_NUMBER);
         pts.setSingleLine(true);
-        pts.setTextColor(Color.WHITE);
-        pts.setHintTextColor(SUB);
-        pts.setHint("ポイント");
-        pts.setTextSize(TypedValue.COMPLEX_UNIT_SP, 15);
-        pts.setBackground(round(0xFF0E0E10, 6 * d, (int) (1 * d), 0xFF3A3A3D));
-        pts.setPadding((int) (10 * d), (int) (8 * d), (int) (10 * d), (int) (8 * d));
+        pts.setTypeface(Typeface.DEFAULT_BOLD);
+        pts.setFontFeatureSettings("tnum");
+        pts.setTextSize(TypedValue.COMPLEX_UNIT_SP, 15f);
         pts.setText(String.valueOf(KizuSettings.PREDICTION_POINTS.get()));
-        amount.addView(pts, new LinearLayout.LayoutParams(0, -2, 1));
+        amount.addView(pts, new LinearLayout.LayoutParams(0, -2, 1f));
+
         String[] quick = {"+10", "+100", "+1000", "全部"};
         for (String q : quick) {
-            TextView b = label(c, q, 13, Color.WHITE, true);
+            TextView b = label(c, q, 12.5f, primary, true);
             b.setGravity(Gravity.CENTER);
-            b.setPadding((int) (8 * d), (int) (8 * d), (int) (8 * d), (int) (8 * d));
-            b.setBackground(round(0xFF3A3A3D, 6 * d, 0, 0));
+            b.setPadding(dp(d, 9), dp(d, 9), dp(d, 9), dp(d, 9));
+            b.setBackground(TwitchUi.ripple(
+                    c,
+                    TwitchUi.roundedRect(cardBg, 8 * d, Math.max(1, dp(d, 0.75f)), borderCol),
+                    8 * d));
             LinearLayout.LayoutParams bp = new LinearLayout.LayoutParams(-2, -2);
-            bp.leftMargin = (int) (5 * d);
+            bp.leftMargin = dp(d, 5);
             b.setOnClickListener(v -> {
                 long cur;
                 try { cur = Long.parseLong(pts.getText().toString().trim()); } catch (Throwable t) { cur = 0; }
@@ -476,16 +720,20 @@ public final class TvBet {
         }
         root.addView(amount);
 
-        TextView expect = label(c, "", 12, SUB, false);
-        expect.setPadding(0, (int) (6 * d), 0, 0);
+        TextView expect = label(c, "", 12f, secondary, false);
+        expect.setFontFeatureSettings("tnum");
+        expect.setPadding(0, dp(d, 6), 0, 0);
         root.addView(expect);
 
-        TextView betBtn = label(c, "選択肢を選んでください", 15, Color.WHITE, true);
+        TextView betBtn = label(c, "選択肢を選んでください", 15f, secondary, true);
         betBtn.setGravity(Gravity.CENTER);
-        betBtn.setPadding(0, (int) (12 * d), 0, (int) (12 * d));
-        betBtn.setBackground(round(0xFF3A3A3D, 6 * d, 0, 0));
+        betBtn.setPadding(dp(d, 12), dp(d, 12), dp(d, 12), dp(d, 12));
+        betBtn.setBackground(TwitchUi.ripple(
+                c,
+                TwitchUi.roundedRect(cardBg, 10 * d, Math.max(1, dp(d, 0.75f)), borderCol),
+                10 * d));
         LinearLayout.LayoutParams bbp = new LinearLayout.LayoutParams(-1, -2);
-        bbp.topMargin = (int) (10 * d);
+        bbp.topMargin = dp(d, 10);
         root.addView(betBtn, bbp);
 
         final long fTotal = total;
@@ -493,36 +741,58 @@ public final class TvBet {
             for (int i = 0; i < n; i++) {
                 if (cards[i] == null) continue;
                 int col = colorOf(outs.optJSONObject(i), i);
-                cards[i].setBackground(round(CARD, 8 * d, (int) (2 * d), i == selected[0] ? col : CARD));
+                boolean isSel = i == selected[0];
+                int fill = isSel
+                        ? Color.argb(dark ? 0x26 : 0x16, Color.red(col), Color.green(col), Color.blue(col))
+                        : cardBg;
+                cards[i].setBackground(TwitchUi.ripple(
+                        c,
+                        TwitchUi.roundedRect(fill, 10 * d,
+                                isSel ? dp(d, 2) : Math.max(1, dp(d, 1)),
+                                isSel ? col : borderCol),
+                        10 * d));
             }
             int s = selected[0];
-            expect.setTextColor(SUB);
-            if (s < 0) { expect.setText(""); return; }
+            expect.setTextColor(secondary);
+            if (s < 0) {
+                expect.setText("");
+                betBtn.setText("選択肢を選んでください");
+                betBtn.setTextColor(secondary);
+                betBtn.setBackground(TwitchUi.ripple(
+                        c,
+                        TwitchUi.roundedRect(cardBg, 10 * d, Math.max(1, dp(d, 0.75f)), borderCol),
+                        10 * d));
+                return;
+            }
             JSONObject o = outs.optJSONObject(s);
             int col = colorOf(o, s);
             String title = o.optString("title");
-            if (title.length() > 12) title = title.substring(0, 12) + "…";
+            if (title.length() > 14) title = title.substring(0, 14) + "…";
             betBtn.setText("「" + title + "」に賭ける");
-            betBtn.setBackground(round(col, 6 * d, 0, 0));
+            betBtn.setTextColor(Color.WHITE);
+            betBtn.setBackground(TwitchUi.ripple(c, TwitchUi.roundedRect(col, 10 * d, 0, 0), 10 * d));
             try {
                 long p = Long.parseLong(pts.getText().toString().trim());
                 long op = Math.max(0, o.optLong("totalPoints"));
                 if (p <= 0) { expect.setText(""); return; }
                 long win = Math.round((double) (fTotal + p) * p / (op + p));
                 expect.setText("当たれば約 " + num(win) + " pt（+" + num(win - p) + "）※今の状況での目安");
-            } catch (Throwable t) { expect.setText(""); }
+            } catch (Throwable t) {
+                expect.setText("");
+            }
         };
         for (int i = 0; i < n; i++) {
             if (cards[i] == null) continue;
             final int idx = i;
-            cards[i].setOnClickListener(v -> { selected[0] = idx; update.run(); });
+            cards[i].setOnClickListener(v -> {
+                selected[0] = idx;
+                update.run();
+            });
         }
-        int def = Math.max(1, KizuSettings.PREDICTION_OUTCOME.get());
         for (int i = 0; i < n; i++) {
             JSONObject o = outs.optJSONObject(i);
             if (o != null && o.optString("id").equals(mineOutcome)) selected[0] = i;
         }
-        if (selected[0] < 0 && n > 0 && mineOutcome == null && n <= 2) selected[0] = -1;
         pts.addTextChangedListener(new TextWatcher() {
             public void beforeTextChanged(CharSequence a, int b, int x, int y) {}
             public void onTextChanged(CharSequence a, int b, int x, int y) {}
@@ -533,29 +803,41 @@ public final class TvBet {
         final String eventId = ev.optString("id");
         betBtn.setOnClickListener(v -> {
             int s = selected[0];
-            if (s < 0) { expect.setTextColor(0xFFEB0400); expect.setText("選択肢をタップして選んでください"); return; }
+            if (s < 0) {
+                expect.setTextColor(SettingsUi.dangerColor());
+                expect.setText("選択肢をタップして選んでください");
+                return;
+            }
             int p;
             try { p = Integer.parseInt(pts.getText().toString().trim()); } catch (Throwable t) { p = 0; }
-            if (p < 1) { expect.setTextColor(0xFFEB0400); expect.setText("ポイントを入れてください"); return; }
+            if (p < 1) {
+                expect.setTextColor(SettingsUi.dangerColor());
+                expect.setText("ポイントを入れてください");
+                return;
+            }
             if (st.balance >= 0 && p > st.balance) p = st.balance;
             final int fp = p;
             final String outcomeId = outs.optJSONObject(s).optString("id");
             betBtn.setEnabled(false);
             betBtn.setText("送信中…");
-            new Thread(() -> {
+            KizuRuntime.ioExecutor().execute(() -> {
                 String[] result = bet(eventId, outcomeId, fp);
                 MAIN.post(() -> {
                     if ("ok".equals(result[0])) {
                         watch(c.getApplicationContext(), st.channelId, eventId);
-                        try { dlg.dismiss(); } catch (Throwable ignored) {}
-                        load(c);
+                        Toast.makeText(c, result[1], Toast.LENGTH_SHORT).show();
+                        if (dlg.isShowing()) {
+                            load(c, dlg, root, null);
+                        } else {
+                            load(c, null, null, null);
+                        }
                     } else {
                         betBtn.setEnabled(true);
                         update.run();
                         info(c, "予想", result[1]);
                     }
                 });
-            }, "kizu-tv-bet").start();
+            });
         });
     }
 
@@ -572,27 +854,37 @@ public final class TvBet {
 
     private static void showHistory(Context c, State st) {
         float d = density(c);
+        int primary = SettingsUi.primaryTextColor(c);
+        int secondary = SettingsUi.secondaryTextColor(c);
+        int cardBg = SettingsUi.alternateBackgroundColor(c);
+        int borderCol = SettingsUi.borderColor(c);
+        boolean dark = SettingsUi.isDark(c);
+
         Dialog dlg = new Dialog(c);
         dlg.requestWindowFeature(Window.FEATURE_NO_TITLE);
         LinearLayout root = new LinearLayout(c);
         root.setOrientation(LinearLayout.VERTICAL);
-        int pad = (int) (16 * d);
-        root.setPadding(pad, pad, pad, pad);
-        root.setBackgroundColor(BG);
+        int pad = dp(d, 16);
+        root.setPadding(pad, dp(d, 2), pad, pad);
+
+        root.addView(TwitchUi.dragHandle(c));
 
         LinearLayout top = new LinearLayout(c);
+        top.setOrientation(LinearLayout.HORIZONTAL);
         top.setGravity(Gravity.CENTER_VERTICAL);
-        top.addView(label(c, "賭けの履歴", 17, Color.WHITE, true), new LinearLayout.LayoutParams(0, -2, 1));
-        TextView close = label(c, "✕", 16, SUB, false);
-        close.setOnClickListener(v -> dlg.dismiss());
-        top.addView(close);
+        top.setPadding(0, dp(d, 4), 0, 0);
+        top.addView(label(c, "賭けの履歴", 17f, primary, true), new LinearLayout.LayoutParams(0, -2, 1f));
+        top.addView(TwitchUi.createCloseButton(c, dlg::dismiss));
         root.addView(top);
 
         if (st.recent == null) {
-            root.addView(spaced(label(c, "履歴を取得できませんでした。", 14, SUB, false), d, 12));
+            TextView empty = label(c, "履歴を取得できませんでした。", 14f, secondary, false);
+            empty.setPadding(0, dp(d, 12), 0, 0);
+            root.addView(empty);
         } else {
             long since = parseTime(st.streamStart);
-            long streamNet = 0, allNet = 0; int streamCount = 0, wins = 0, decided = 0;
+            long streamNet = 0, allNet = 0;
+            int streamCount = 0, wins = 0, decided = 0;
             List<JSONObject> rows = new ArrayList<>();
             for (int i = 0; i < st.recent.length(); i++) {
                 JSONObject p = st.recent.optJSONObject(i);
@@ -610,63 +902,114 @@ public final class TvBet {
                     if ("WIN".equalsIgnoreCase(p.optString("result"))) wins++;
                 }
             }
-            String scope = since > 0 ? "この配信" : "直近12時間";
-            TextView sum = label(c, scope + "の累計  " + sign(streamNet) + " pt", 20, streamNet >= 0 ? 0xFF00C85A : 0xFFEB0400, true);
-            root.addView(spaced(sum, d, 12));
-            root.addView(spaced(label(c, streamCount + "回 · 的中 " + wins + "/" + decided
-                    + "　（最近の全体 " + sign(allNet) + " pt）", 12, SUB, false), d, 2));
 
-            if (rows.isEmpty()) root.addView(spaced(label(c, scope + "ではまだ賭けていません", 14, SUB, false), d, 14));
+            String scope = since > 0 ? "この配信" : "直近12時間";
+            LinearLayout summaryCard = new LinearLayout(c);
+            summaryCard.setOrientation(LinearLayout.VERTICAL);
+            int spPad = dp(d, 12);
+            summaryCard.setPadding(spPad, spPad, spPad, spPad);
+            summaryCard.setBackground(TwitchUi.roundedRect(cardBg, 10 * d, Math.max(1, dp(d, 0.75f)), borderCol));
+            LinearLayout.LayoutParams scp = new LinearLayout.LayoutParams(-1, -2);
+            scp.topMargin = dp(d, 10);
+
+            TextView sum = label(c, scope + "の累計  " + sign(streamNet) + " pt",
+                    19f, streamNet >= 0 ? SettingsUi.successColor() : SettingsUi.dangerColor(), true);
+            sum.setFontFeatureSettings("tnum");
+            summaryCard.addView(sum);
+
+            TextView sub = label(c, streamCount + "回 · 的中 " + wins + "/" + decided
+                    + "　（最近の全体 " + sign(allNet) + " pt）", 12f, secondary, false);
+            sub.setFontFeatureSettings("tnum");
+            sub.setPadding(0, dp(d, 3), 0, 0);
+            summaryCard.addView(sub);
+            root.addView(summaryCard, scp);
+
+            if (rows.isEmpty()) {
+                TextView empty = label(c, scope + "ではまだ賭けていません", 14f, secondary, false);
+                empty.setPadding(0, dp(d, 14), 0, 0);
+                root.addView(empty);
+            }
             for (JSONObject p : rows) {
                 JSONObject e = p.optJSONObject("event");
                 LinearLayout card = new LinearLayout(c);
                 card.setOrientation(LinearLayout.VERTICAL);
-                int cp = (int) (10 * d);
+                int cp = dp(d, 12);
                 card.setPadding(cp, cp, cp, cp);
-                card.setBackground(round(CARD, 8 * d, 0, 0));
-                card.addView(label(c, e == null ? "予想" : e.optString("title"), 14, Color.WHITE, true));
+                card.setBackground(TwitchUi.roundedRect(cardBg, 10 * d, Math.max(1, dp(d, 0.75f)), borderCol));
+
+                card.addView(label(c, e == null ? "予想" : e.optString("title"), 14f, primary, true));
+
                 String oid = p.optJSONObject("outcome") == null ? "" : p.optJSONObject("outcome").optString("id");
-                String otitle = ""; int col = BLUE;
+                String otitle = "";
+                int col = BLUE;
                 JSONArray outs = e == null ? null : e.optJSONArray("outcomes");
                 for (int i = 0; outs != null && i < outs.length(); i++) {
                     JSONObject o = outs.optJSONObject(i);
-                    if (o != null && o.optString("id").equals(oid)) { otitle = o.optString("title"); col = colorOf(o, i); }
+                    if (o != null && o.optString("id").equals(oid)) {
+                        otitle = o.optString("title");
+                        col = colorOf(o, i);
+                    }
                 }
-                card.addView(label(c, "● " + otitle + "　" + num(p.optLong("points")) + " pt", 13, col, false));
+                TextView pickLine = label(c, "● " + otitle + "　" + num(p.optLong("points")) + " pt", 13f, col, true);
+                pickLine.setFontFeatureSettings("tnum");
+                pickLine.setPadding(0, dp(d, 4), 0, 0);
+                card.addView(pickLine);
+
                 String r = p.optString("result", "");
-                String line; int lc;
-                if (!resolved(p)) { line = "結果待ち"; lc = SUB; }
-                else if ("WIN".equalsIgnoreCase(r)) { line = "的中  " + sign(net(p)) + " pt"; lc = 0xFF00C85A; }
-                else if ("REFUND".equalsIgnoreCase(r)) { line = "返金  ±0 pt"; lc = SUB; }
-                else { line = "ハズレ  " + sign(net(p)) + " pt"; lc = 0xFFEB0400; }
-                card.addView(label(c, line, 14, lc, true));
+                String line;
+                int lc;
+                if (!resolved(p)) {
+                    line = "結果待ち";
+                    lc = secondary;
+                } else if ("WIN".equalsIgnoreCase(r)) {
+                    line = "的中  " + sign(net(p)) + " pt";
+                    lc = SettingsUi.successColor();
+                } else if ("REFUND".equalsIgnoreCase(r)) {
+                    line = "返金  ±0 pt";
+                    lc = secondary;
+                } else {
+                    line = "ハズレ  " + sign(net(p)) + " pt";
+                    lc = SettingsUi.dangerColor();
+                }
+                TextView statusBadge = label(c, line, 12.5f, lc, true);
+                statusBadge.setFontFeatureSettings("tnum");
+                int pillBg = Color.argb(dark ? 0x22 : 0x16, Color.red(lc), Color.green(lc), Color.blue(lc));
+                statusBadge.setBackground(TwitchUi.roundedRect(pillBg, 6 * d, 0, 0));
+                statusBadge.setPadding(dp(d, 8), dp(d, 3), dp(d, 8), dp(d, 3));
+                LinearLayout.LayoutParams sbp = new LinearLayout.LayoutParams(-2, -2);
+                sbp.topMargin = dp(d, 6);
+                card.addView(statusBadge, sbp);
+
                 LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(-1, -2);
-                lp.topMargin = (int) (8 * d);
+                lp.topMargin = dp(d, 8);
                 root.addView(card, lp);
             }
         }
 
         ScrollView sv = new ScrollView(c);
         sv.setFillViewport(true);
+        sv.setBackground(TwitchUi.sheetBackground(c, 16f));
+        sv.setClipToOutline(true);
         sv.addView(root, new ViewGroup.LayoutParams(-1, -2));
         dlg.setContentView(sv);
-        placeOverChat(dlg, c, sv, root, d);
+        placeOverChat(dlg, c, d);
         dlg.show();
-        placeOverChat(dlg, c, sv, root, d);
+        placeOverChat(dlg, c, d);
     }
 
     /** プレイヤーの下（コメント欄の位置）にだけ重ねる。プレイヤーが見つからなければ画面下60%。 */
-    private static void placeOverChat(Dialog dlg, Context c, ScrollView sv, LinearLayout root, float d) {
+    private static void placeOverChat(Dialog dlg, Context c, float d) {
         Window w = dlg.getWindow();
         if (w == null) return;
         w.setBackgroundDrawable(new ColorDrawable(Color.TRANSPARENT));
         w.clearFlags(WindowManager.LayoutParams.FLAG_DIM_BEHIND);
-        android.util.DisplayMetrics dm = c.getResources().getDisplayMetrics();
+        w.setWindowAnimations(android.R.style.Animation_InputMethod);
+        DisplayMetrics dm = c.getResources().getDisplayMetrics();
         int screenH = dm.heightPixels;
         int top = -1;
-        Activity a = activity(c);
+        Activity a = Utils.findActivity(c);
         if (a != null) {
-            int id = a.getResources().getIdentifier("player_overlay_container", "id", a.getPackageName());
+            int id = Utils.getResourceId(a, "player_overlay_container", "id");
             View player = id != 0 ? a.findViewById(id) : null;
             if (player != null && player.isShown() && player.getHeight() > 0) {
                 int[] loc = new int[2];
@@ -679,18 +1022,10 @@ public final class TvBet {
         }
         int h = top > 0 && top < screenH * 0.8f ? screenH - top : (int) (screenH * 0.6f);
         boolean landscape = dm.widthPixels > dm.heightPixels;
-        int width = landscape ? Math.min(dm.widthPixels, (int) (420 * d)) : WindowManager.LayoutParams.MATCH_PARENT;
+        int width = landscape ? Math.min(dm.widthPixels, dp(d, 420)) : WindowManager.LayoutParams.MATCH_PARENT;
         w.setGravity(Gravity.BOTTOM | (landscape ? Gravity.RIGHT : Gravity.CENTER_HORIZONTAL));
         w.getDecorView().setPadding(0, 0, 0, 0);
         w.setLayout(width, h);
-    }
-
-    private static Activity activity(Context c) {
-        while (c instanceof android.content.ContextWrapper) {
-            if (c instanceof Activity) return (Activity) c;
-            c = ((android.content.ContextWrapper) c).getBaseContext();
-        }
-        return null;
     }
 
     private static String sign(long v) {
@@ -699,7 +1034,7 @@ public final class TvBet {
 
     private static long parseTime(String s) {
         if (s == null || s.isEmpty() || "null".equals(s)) return 0;
-        try { return java.time.Instant.parse(s).toEpochMilli(); } catch (Throwable t) { return 0; }
+        try { return Instant.parse(s).toEpochMilli(); } catch (Throwable t) { return 0; }
     }
 
     // ---------- 結果の見張り（賭けたときだけ、30秒ごと） ----------
@@ -708,21 +1043,30 @@ public final class TvBet {
 
     private static void watch(Context app, String channelId, String eventId) {
         if (eventId == null || !WATCHING.add(eventId)) return;
-        Thread t = new Thread(() -> {
-            long until = System.currentTimeMillis() + 3L * 3600_000L;
+        long until = System.currentTimeMillis() + 3L * 3600_000L;
+        scheduleWatchPoll(app, channelId, eventId, until);
+    }
+
+    private static void scheduleWatchPoll(Context app, String channelId, String eventId, long until) {
+        if (System.currentTimeMillis() >= until) {
+            WATCHING.remove(eventId);
+            return;
+        }
+        KizuRuntime.scheduler().schedule(() -> KizuRuntime.ioExecutor().execute(() -> {
+            if (System.currentTimeMillis() >= until || KizuSettings.TV_TOKEN.get().trim().isEmpty()) {
+                WATCHING.remove(eventId);
+                return;
+            }
             try {
-                while (System.currentTimeMillis() < until) {
-                    Thread.sleep(30_000L);
-                    if (KizuSettings.TV_TOKEN.get().trim().isEmpty()) return;
-                    JSONObject req = new JSONObject()
-                            .put("operationName", "KizuRecentPredictions")
-                            .put("variables", new JSONObject().put("id", channelId))
-                            .put("query", "query KizuRecentPredictions($id: ID!) { user(id: $id) { channel { self {"
-                                    + " recentPredictions { points pointsWon result event { id title } } } } } }");
-                    JSONObject res = parse(gql(req.toString())[1]);
-                    JSONObject self = res == null ? null : path(res, "data", "user", "channel", "self");
-                    JSONArray rec = self == null ? null : self.optJSONArray("recentPredictions");
-                    if (rec == null) continue;
+                JSONObject req = new JSONObject()
+                        .put("operationName", "KizuRecentPredictions")
+                        .put("variables", new JSONObject().put("id", channelId))
+                        .put("query", "query KizuRecentPredictions($id: ID!) { user(id: $id) { channel { self {"
+                                + " recentPredictions { points pointsWon result event { id title } } } } } }");
+                JSONObject res = parse(gql(req.toString())[1]);
+                JSONObject self = res == null ? null : path(res, "data", "user", "channel", "self");
+                JSONArray rec = self == null ? null : self.optJSONArray("recentPredictions");
+                if (rec != null) {
                     for (int i = 0; i < rec.length(); i++) {
                         JSONObject p = rec.optJSONObject(i);
                         JSONObject e = p == null ? null : p.optJSONObject("event");
@@ -733,16 +1077,14 @@ public final class TvBet {
                             String msg = "予想的中！ +" + num(plus) + " pt（" + e.optString("title") + "）";
                             MAIN.post(() -> Toast.makeText(app, msg, Toast.LENGTH_LONG).show());
                         }
+                        WATCHING.remove(eventId);
                         return;
                     }
                 }
             } catch (Throwable ignored) {
-            } finally {
-                WATCHING.remove(eventId);
             }
-        }, "kizu-tv-watch");
-        t.setDaemon(true);
-        t.start();
+            scheduleWatchPoll(app, channelId, eventId, until);
+        }), 30L, TimeUnit.SECONDS);
     }
 
     // ---------- 賭ける ----------
@@ -772,7 +1114,10 @@ public final class TvBet {
                 JSONObject res2 = parse(r2[1]);
                 mp = res2 == null ? null : path(res2, "data", "makePrediction");
                 if (mp == null) {
-                    if ("401".equals(r[0]) || "401".equals(r2[0])) { KizuSettings.TV_TOKEN.save(""); return new String[]{"ng", "ログインの期限が切れました。もう一度ログインしてください。"}; }
+                    if ("401".equals(r[0]) || "401".equals(r2[0])) {
+                        KizuSettings.TV_TOKEN.save("");
+                        return new String[]{"ng", "ログインの期限が切れました。もう一度ログインしてください。"};
+                    }
                     return new String[]{"ng", "失敗: HTTP " + r[0] + " / " + r2[0] + "\n" + shorten(r[1]) + "\n" + shorten(r2[1])};
                 }
             }
@@ -844,7 +1189,10 @@ public final class TvBet {
                     ByteArrayOutputStream out = new ByteArrayOutputStream();
                     byte[] buf = new byte[8192];
                     int n, total = 0;
-                    while ((n = s.read(buf)) != -1 && total < 256 * 1024) { total += n; out.write(buf, 0, n); }
+                    while ((n = s.read(buf)) != -1 && total < 256 * 1024) {
+                        total += n;
+                        out.write(buf, 0, n);
+                    }
                     text = out.toString("UTF-8");
                 }
             }
@@ -864,17 +1212,19 @@ public final class TvBet {
     }
 
     private static JSONObject path(JSONObject o, String... keys) {
-        for (String k : keys) { if (o == null) return null; o = o.optJSONObject(k); }
+        for (String k : keys) {
+            if (o == null) return null;
+            o = o.optJSONObject(k);
+        }
         return o;
     }
 
-    private static long secondsLeft(JSONObject ev) {
+    private static long parseEventEndMillis(JSONObject ev) {
         try {
-            long created = java.time.Instant.parse(ev.optString("createdAt")).toEpochMilli();
-            long end = created + ev.optLong("predictionWindowSeconds") * 1000L;
-            return Math.max(0, (end - System.currentTimeMillis()) / 1000L);
+            long created = Instant.parse(ev.optString("createdAt")).toEpochMilli();
+            return created + ev.optLong("predictionWindowSeconds") * 1000L;
         } catch (Throwable t) {
-            return -1;
+            return -1L;
         }
     }
 
@@ -883,44 +1233,30 @@ public final class TvBet {
         return s.length() > 200 ? s.substring(0, 200) + "…" : s;
     }
 
-    private static float density(Context c) { return c.getResources().getDisplayMetrics().density; }
-
-    private static LinearLayout box(Context c, float d) {
-        LinearLayout box = new LinearLayout(c);
-        box.setOrientation(LinearLayout.VERTICAL);
-        int pad = (int) (20 * d);
-        box.setPadding(pad, (int) (8 * d), pad, 0);
-        return box;
+    private static float density(Context c) {
+        return c.getResources().getDisplayMetrics().density;
     }
 
-    private static TextView text(Context c, float d, String s, int sp) {
-        TextView t = new TextView(c);
-        t.setText(s);
-        t.setTextColor(0xFFDDDDDD);
-        t.setTextSize(TypedValue.COMPLEX_UNIT_SP, sp);
-        t.setPadding(0, (int) (10 * d), 0, 0);
-        return t;
+    private static int dp(float d, int value) {
+        return Math.round(value * d);
     }
 
-    private static TextView label(Context c, String s, int sp, int color, boolean bold) {
+    private static int dp(float d, float value) {
+        return Math.round(value * d);
+    }
+
+    private static TextView label(Context c, String s, float sp, int color, boolean bold) {
         TextView t = new TextView(c);
         t.setText(s);
         t.setTextColor(color);
         t.setTextSize(TypedValue.COMPLEX_UNIT_SP, sp);
-        if (bold) t.setTypeface(android.graphics.Typeface.DEFAULT_BOLD);
-        return t;
-    }
-
-    private static TextView spaced(TextView t, float d, int topDp) {
-        t.setPadding(t.getPaddingLeft(), (int) (topDp * d), t.getPaddingRight(), t.getPaddingBottom());
+        if (bold) t.setTypeface(Typeface.DEFAULT_BOLD);
         return t;
     }
 
     private static void info(Context c, String title, String m) {
         try {
-            TextView t = new TextView(c);
-            new AlertDialog.Builder(c, android.R.style.Theme_Material_Dialog_Alert)
-                    .setTitle(title).setMessage(m).setPositiveButton("OK", null).show();
+            TwitchUi.showAlert(c, title, m);
         } catch (Throwable ignored) {}
     }
 }

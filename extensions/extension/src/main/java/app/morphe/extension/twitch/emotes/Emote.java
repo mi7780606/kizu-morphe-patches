@@ -2,6 +2,7 @@ package app.morphe.extension.twitch.emotes;
 
 final class Emote {
     final String name;
+    final String lowerName;
     final String url;
     final boolean animated;
     final boolean zeroWidth;
@@ -17,6 +18,7 @@ final class Emote {
 
     Emote(String name, String url, boolean animated, boolean zeroWidth, int provider) {
         this.name = name;
+        this.lowerName = name == null ? "" : name.toLowerCase(java.util.Locale.ROOT);
         this.url = url;
         this.animated = animated;
         this.zeroWidth = zeroWidth;
@@ -35,4 +37,3 @@ final class Emote {
         return -1;
     }
 }
-

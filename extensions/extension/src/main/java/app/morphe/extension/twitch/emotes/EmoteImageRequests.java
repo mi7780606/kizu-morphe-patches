@@ -16,12 +16,13 @@ final class EmoteImageRequests implements AutoCloseable {
     private final Map<String, Ticket> pending = new HashMap<>();
 
     EmoteImageRequests(int threads) {
-        workers = new ThreadPoolExecutor(threads, threads, 0, TimeUnit.MILLISECONDS,
+        workers = new ThreadPoolExecutor(threads, threads, 30L, TimeUnit.SECONDS,
                 new LinkedBlockingQueue<>(48), task -> {
                     Thread thread = new Thread(task, "TwitchEmoteImages");
                     thread.setDaemon(true);
                     return thread;
                 });
+        workers.allowCoreThreadTimeOut(true);
     }
 
     synchronized boolean submit(String url, Consumer<Ticket> load) {
@@ -51,4 +52,3 @@ final class EmoteImageRequests implements AutoCloseable {
     void cancel() { retain(java.util.Collections.emptySet()); }
     @Override public void close() { cancel(); workers.shutdownNow(); }
 }
-

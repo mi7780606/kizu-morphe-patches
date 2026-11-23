@@ -7,45 +7,25 @@ import android.view.View;
 import android.view.ViewGroup;
 import android.widget.TextView;
 
+import java.lang.ref.WeakReference;
 import java.util.WeakHashMap;
 
 import app.morphe.extension.settings.Settings;
 
 /**
- * Selects Twitch's native Home -> Following tab once when a Home activity first opens.
- *
- * The Home tab strip is identified by Twitch resource entry names rather than screen coordinates.
- * This is substantially more reliable than looking for any TextView whose text happens to be
- * "Following": the actual tab view owns the click behavior and Twitch's tab controller updates
- * its selection state.
+ * Selects Twitch's native Home -> Following tab when a Home activity opens.
+ * When "following" is selected, Twitch's native DefaultHomeTabPatch bytecode hook handles it
+ * directly, so zero view scanning or delayed polling runs.
  */
 public final class DefaultFollowing {
     private static final Handler MAIN = new Handler(Looper.getMainLooper());
     private static final WeakHashMap<Activity, Boolean> SCHEDULED = new WeakHashMap<>();
 
-    private static final String[] TAB_STRIP_IDS = {
-            "tab_layout",
-            "tab_layout_no_tab_width"
-    };
+    private DefaultFollowing() {}
 
-    private DefaultFollowing() {
-    }
-
-    /**
-     * The bytecode home-page hook uses Twitch's native Following page when the user selected
-     * Following. Live and Clips continue through the existing tab-selection fallback below,
-     * preserving Kizu's three-way setting while we use the native hook where it maps cleanly.
-     */
     public static boolean useNativeFollowing() {
         try {
-            android.content.Context context = io.github.bakwudo.uyu.extension.Utils.getContext();
-            if (context == null) return true;
-            android.content.SharedPreferences preferences =
-                    context.getSharedPreferences(
-                            app.morphe.extension.settings.Setting.PREFERENCES_NAME,
-                            android.content.Context.MODE_PRIVATE
-                    );
-            String value = preferences.getString("default_home_tab", "following");
+            String value = Settings.DEFAULT_HOME_TAB.get();
             return !"live".equalsIgnoreCase(value) && !"clips".equalsIgnoreCase(value);
         } catch (Throwable ignored) {
             return true;
@@ -53,6 +33,7 @@ public final class DefaultFollowing {
     }
 
     public static void onActivityStarted(Activity activity) {
+        if (useNativeFollowing()) return;
         schedule(activity);
     }
 
@@ -63,37 +44,33 @@ public final class DefaultFollowing {
             SCHEDULED.put(activity, Boolean.TRUE);
         }
 
-        // The Home page is populated asynchronously. Try through the whole startup window rather
-        // than assuming the tab strip exists at a fixed delay.
+        final WeakReference<Activity> ref = new WeakReference<>(activity);
+        final boolean[] done = {false};
         long[] delays = {500L, 1000L, 1800L, 3000L, 5000L, 8000L};
         for (final long delay : delays) {
-            MAIN.postDelayed(new Runnable() {
-                @Override
-                public void run() {
-                    try {
-                        if (activity.isFinishing() || activity.isDestroyed()) return;
-                        if (selectFollowing(activity)) {
-                            return;
-                        }
-                    } catch (Throwable ignored) {
+            MAIN.postDelayed(() -> {
+                if (done[0]) return;
+                try {
+                    Activity current = ref.get();
+                    if (current == null || current.isFinishing() || current.isDestroyed()) {
+                        done[0] = true;
+                        return;
                     }
-                }
+                    if (selectFollowing(current)) {
+                        done[0] = true;
+                    }
+                } catch (Throwable ignored) {}
             }, delay);
         }
     }
 
     private static boolean selectFollowing(Activity activity) {
-        View root = activity.getWindow().getDecorView();
+        View root = activity.getWindow() == null ? null : activity.getWindow().getDecorView();
         View strip = findTabStrip(root);
-        if (strip == null) return false;
-
-        if (!(strip instanceof ViewGroup)) return false;
-        ViewGroup stripGroup = (ViewGroup) strip;
-        if (stripGroup.getChildCount() == 0) return false;
+        if (!(strip instanceof ViewGroup stripGroup) || stripGroup.getChildCount() == 0) return false;
 
         View rowView = stripGroup.getChildAt(0);
-        if (!(rowView instanceof ViewGroup)) return false;
-        ViewGroup row = (ViewGroup) rowView;
+        if (!(rowView instanceof ViewGroup row)) return false;
 
         String tabEntryName = Settings.DEFAULT_HOME_TAB.get();
         if (!"live".equalsIgnoreCase(tabEntryName) && !"clips".equalsIgnoreCase(tabEntryName)) {
@@ -116,69 +93,32 @@ public final class DefaultFollowing {
         if (desiredTab == null) return false;
         if (isSelected(desiredTab)) return true;
 
-        // This is Twitch's actual tab container. Clicking it lets Twitch's own navigation
-        // controller perform the transition and update the selected state.
         try {
             View target = nearestClickable(desiredTab);
-            if (target != null && target.isEnabled() && target.performClick()) {
-                return true;
-            }
-            if (desiredTab.isEnabled() && desiredTab.performClick()) {
-                return true;
-            }
-        } catch (Throwable ignored) {
-        }
+            if (target != null && target.isEnabled() && target.performClick()) return true;
+            if (desiredTab.isEnabled() && desiredTab.performClick()) return true;
+        } catch (Throwable ignored) {}
         return isSelected(desiredTab);
     }
+
     private static View findTabStrip(View root) {
         if (root == null) return null;
-        View[] found = new View[1];
-        walk(root, new ViewVisitor() {
-            @Override
-            public void visit(View view) {
-                if (found[0] != null) return;
-                if (view.getVisibility() != View.VISIBLE || !view.isShown()) return;
-
-                String entry = resourceEntryName(view);
-                if (entry != null) {
-                    for (String candidate : TAB_STRIP_IDS) {
-                        if (candidate.equals(entry)) {
-                            found[0] = view;
-                            return;
-                        }
-                    }
-                }
-            }
-        });
-        return found[0];
-    }
-
-    private static String resourceEntryName(View view) {
-        try {
-            if (view.getId() == View.NO_ID) return null;
-            return view.getResources().getResourceEntryName(view.getId());
-        } catch (Throwable ignored) {
-            return null;
+        int id1 = Utils.getResourceId(root.getContext(), "tab_layout", "id");
+        if (id1 != 0) {
+            View v = root.findViewById(id1);
+            if (v != null && v.isShown()) return v;
         }
-    }
-
-    private interface ViewVisitor {
-        void visit(View view);
-    }
-
-    private static void walk(View root, ViewVisitor visitor) {
-        visitor.visit(root);
-        if (!(root instanceof ViewGroup)) return;
-
-        ViewGroup group = (ViewGroup) root;
-        for (int i = 0; i < group.getChildCount(); i++) {
-            walk(group.getChildAt(i), visitor);
+        int id2 = Utils.getResourceId(root.getContext(), "tab_layout_no_tab_width", "id");
+        if (id2 != 0) {
+            View v = root.findViewById(id2);
+            if (v != null && v.isShown()) return v;
         }
+        return null;
     }
 
     private static String firstCaption(View view) {
-        if (view instanceof TextView) {
-            CharSequence text = ((TextView) view).getText();
+        if (view instanceof TextView tv) {
+            CharSequence text = tv.getText();
             if (text != null && text.length() > 0) return text.toString();
         }
 
@@ -187,8 +127,7 @@ public final class DefaultFollowing {
             return contentDescription.toString();
         }
 
-        if (view instanceof ViewGroup) {
-            ViewGroup group = (ViewGroup) view;
+        if (view instanceof ViewGroup group) {
             for (int i = 0; i < group.getChildCount(); i++) {
                 String nested = firstCaption(group.getChildAt(i));
                 if (nested != null && !nested.trim().isEmpty()) return nested;
@@ -219,14 +158,9 @@ public final class DefaultFollowing {
 
     private static String getStringByEntryName(Activity activity, String entryName) {
         try {
-            int id = activity.getResources().getIdentifier(
-                    entryName,
-                    "string",
-                    activity.getPackageName()
-            );
+            int id = Utils.getResourceId(activity, entryName, "string");
             if (id != 0) return activity.getResources().getString(id).trim();
-        } catch (Throwable ignored) {
-        }
+        } catch (Throwable ignored) {}
         return null;
     }
 }

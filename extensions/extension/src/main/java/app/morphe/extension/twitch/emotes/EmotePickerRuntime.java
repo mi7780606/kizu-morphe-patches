@@ -1,15 +1,19 @@
 package app.morphe.extension.twitch.emotes;
 
+import android.graphics.drawable.Drawable;
 import android.os.Handler;
 import android.os.Looper;
 import android.view.View;
 import android.widget.ImageView;
 import android.widget.LinearLayout;
+
 import java.lang.ref.WeakReference;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
 import java.util.Map;
+
+import app.morphe.extension.settings.TwitchUi;
 
 public final class EmotePickerRuntime {
     private static final String PREFIX = "twitchpatches-picker:";
@@ -20,12 +24,13 @@ public final class EmotePickerRuntime {
     private static WeakReference<View> root = new WeakReference<>(null);
     private static List<?> original = Collections.emptyList();
     private static final int[] positions = {-1, -1, -1};
-    private static final ImageView[] buttons = new ImageView[3];
+    @SuppressWarnings("unchecked")
+    private static final WeakReference<ImageView>[] buttons = new WeakReference[3];
     private static String channel;
     private static boolean channelVisible;
     private static boolean received;
 
-    private EmotePickerRuntime() { }
+    private EmotePickerRuntime() {}
 
     public static void begin(Object owner, String id) {
         presenter = new WeakReference<>(owner);
@@ -93,33 +98,49 @@ public final class EmotePickerRuntime {
 
     public static void bind(Object owner, View view) {
         ImageView anchor = view.findViewById(EmotePickerBridge.footerId());
-        if (anchor == null || !(anchor.getParent() instanceof LinearLayout)) return;
+        if (anchor == null || !(anchor.getParent() instanceof LinearLayout bar)) return;
         delegate = new WeakReference<>(owner);
         root = new WeakReference<>(view);
         EmotePickerImages.open(view);
-        LinearLayout bar = (LinearLayout) anchor.getParent();
-        for (ImageView previous : buttons) {
-            if (previous != null && previous.getParent() instanceof LinearLayout)
-                ((LinearLayout) previous.getParent()).removeView(previous);
+        for (int i = 0; i < buttons.length; i++) {
+            WeakReference<ImageView> prevRef = buttons[i];
+            ImageView previous = prevRef == null ? null : prevRef.get();
+            if (previous != null && previous.getParent() instanceof LinearLayout parent) {
+                parent.removeView(previous);
+            }
+            buttons[i] = null;
         }
+
+        Drawable anchorBg = anchor.getBackground();
+        Drawable.ConstantState anchorBgState = anchorBg != null ? anchorBg.getConstantState() : null;
+        int size = Math.round(44 * view.getResources().getDisplayMetrics().density);
+        int padding = Math.round(10 * view.getResources().getDisplayMetrics().density);
+        int barHeight = bar.getLayoutParams() != null ? bar.getLayoutParams().height : LinearLayout.LayoutParams.MATCH_PARENT;
+
         for (int provider = 0; provider < 3; provider++) {
             final int index = provider;
             ImageView button = new ImageView(view.getContext());
-            int size = Math.round(44 * view.getResources().getDisplayMetrics().density);
-            int padding = Math.round(10 * view.getResources().getDisplayMetrics().density);
-            button.setLayoutParams(new LinearLayout.LayoutParams(size, bar.getLayoutParams().height));
+            button.setLayoutParams(new LinearLayout.LayoutParams(size, barHeight));
             button.setPadding(padding, padding, padding, padding);
             button.setScaleType(ImageView.ScaleType.FIT_CENTER);
             button.setContentDescription(PROVIDERS[provider] + " emotes");
+            button.setClickable(true);
+            button.setFocusable(true);
+            if (anchorBgState != null) {
+                button.setBackground(anchorBgState.newDrawable(view.getResources()).mutate());
+            } else {
+                button.setBackground(TwitchUi.selectableBorderlessBackground(view.getContext()));
+            }
             EmoteProviderIcons.bind(button, provider);
             button.setOnClickListener(clicked -> {
                 Object target = delegate.get();
                 View current = root.get();
-                if (target != null && current != null && positions[index] >= 0)
+                if (target != null && current != null && positions[index] >= 0) {
                     EmotePickerBridge.scroll(target, current, positions[index]);
+                }
             });
             bar.addView(button);
-            buttons[provider] = button;
+            buttons[provider] = new WeakReference<>(button);
         }
         updateButtons();
     }
@@ -136,12 +157,12 @@ public final class EmotePickerRuntime {
 
     private static void updateButtons() {
         for (int index = 0; index < 3; index++) {
-            ImageView button = buttons[index];
+            WeakReference<ImageView> ref = buttons[index];
+            ImageView button = ref == null ? null : ref.get();
             if (button == null) continue;
             button.setVisibility(EmoteSupport.providerEnabled(index) ? View.VISIBLE : View.GONE);
             button.setEnabled(positions[index] >= 0);
-            button.setAlpha(positions[index] >= 0 ? 1f : 0.5f);
+            button.setAlpha(positions[index] >= 0 ? 1f : 0.4f);
         }
     }
 }
-

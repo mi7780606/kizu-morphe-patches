@@ -2,10 +2,13 @@ package app.morphe.extension.videostats;
 
 import android.util.Log;
 import android.view.View;
-import app.morphe.extension.settings.Settings;
+
 import java.lang.ref.WeakReference;
 import java.lang.reflect.Method;
 import java.util.Locale;
+import java.util.concurrent.ConcurrentHashMap;
+
+import app.morphe.extension.settings.Settings;
 
 /** Reads the same VideoStats model and factory used by Twitch's own video-statistics UI. */
 public final class VideoStatsRuntime {
@@ -13,6 +16,11 @@ public final class VideoStatsRuntime {
     private static volatile WeakReference<Object> playerContext = new WeakReference<>(null);
     private static volatile Object latestStats;
     private static volatile boolean loggedFailure;
+
+    private static volatile Class<?> cachedPlayerType;
+    private static volatile Class<?> cachedPresenterType;
+    private static volatile Method cachedFactoryMethod;
+    private static final ConcurrentHashMap<String, Method> METHOD_CACHE = new ConcurrentHashMap<>();
 
     private VideoStatsRuntime() {}
 
@@ -41,10 +49,6 @@ public final class VideoStatsRuntime {
         }
     }
 
-    /**
-     * Ask Twitch's own factory for a fresh model. This runs only while the custom stats panel
-     * is open, so the feature does not poll the player in the background.
-     */
     public static boolean refreshFromPlayer(View displayView) {
         Object controller = playerContext.get();
         if (controller == null || displayView == null) return latestStats != null;
@@ -54,17 +58,25 @@ public final class VideoStatsRuntime {
             Object quality = invokeNoArgs(controller, "s1");
             if (player == null || presenter == null) return latestStats != null;
 
-            ClassLoader loader = controller.getClass().getClassLoader();
-            Class<?> playerType = Class.forName("ska", true, loader);
-            Class<?> presenterType = Class.forName("lvt", true, loader);
+            Class<?> playerType = cachedPlayerType;
+            Class<?> presenterType = cachedPresenterType;
+            Method factory = cachedFactoryMethod;
+            if (playerType == null || presenterType == null || factory == null) {
+                ClassLoader loader = controller.getClass().getClassLoader();
+                playerType = Class.forName("ska", true, loader);
+                presenterType = Class.forName("lvt", true, loader);
+                Class<?> factoryType = Class.forName("u480", true, loader);
+                factory = factoryType.getDeclaredMethod(
+                        "a", playerType, presenterType, View.class, String.class);
+                factory.setAccessible(true);
+                cachedPlayerType = playerType;
+                cachedPresenterType = presenterType;
+                cachedFactoryMethod = factory;
+            }
             if (!playerType.isInstance(player) || !presenterType.isInstance(presenter)) {
                 return latestStats != null;
             }
 
-            Class<?> factoryType = Class.forName("u480", true, loader);
-            Method factory = factoryType.getDeclaredMethod(
-                    "a", playerType, presenterType, View.class, String.class);
-            factory.setAccessible(true);
             Object fresh = factory.invoke(null, player, presenter, displayView,
                     quality == null ? "" : String.valueOf(quality));
             if (fresh != null) {
@@ -82,24 +94,36 @@ public final class VideoStatsRuntime {
     }
 
     private static Object invokeNoArgs(Object target, String name) throws Exception {
-        Class<?> type = target.getClass();
+        Class<?> orig = target.getClass();
+        String key = orig.getName() + "#" + name;
+        Method cached = METHOD_CACHE.get(key);
+        if (cached != null) return cached.invoke(target);
+
+        Class<?> type = orig;
         while (type != null) {
             try {
                 Method method = type.getDeclaredMethod(name);
                 method.setAccessible(true);
+                METHOD_CACHE.putIfAbsent(key, method);
                 return method.invoke(target);
             } catch (NoSuchMethodException ignored) {
                 type = type.getSuperclass();
             }
         }
-        throw new NoSuchMethodException(target.getClass().getName() + "." + name);
+        throw new NoSuchMethodException(orig.getName() + "." + name);
     }
 
     private static Object read(Object stats, String getter) {
         if (stats == null) return null;
         try {
-            Method method = stats.getClass().getMethod(getter);
-            method.setAccessible(true);
+            Class<?> type = stats.getClass();
+            String key = type.getName() + "#" + getter;
+            Method method = METHOD_CACHE.get(key);
+            if (method == null) {
+                method = type.getMethod(getter);
+                method.setAccessible(true);
+                METHOD_CACHE.putIfAbsent(key, method);
+            }
             return method.invoke(stats);
         } catch (Throwable ignored) {
             return null;

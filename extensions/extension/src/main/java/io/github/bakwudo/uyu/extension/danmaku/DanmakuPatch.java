@@ -7,17 +7,18 @@ import android.view.View;
 import java.lang.ref.WeakReference;
 import java.util.List;
 
+import app.morphe.extension.twitch.chat.ChatFlow;
+import app.morphe.extension.twitch.chat.ChatHistory;
+import app.morphe.extension.watchlog.WatchTimeTracker;
 import io.github.bakwudo.uyu.extension.Utils;
 import io.github.bakwudo.uyu.extension.settings.Settings;
 
 @SuppressWarnings("unused")
 public final class DanmakuPatch {
     private static final Handler mainHandler = new Handler(Looper.getMainLooper());
-
     private static volatile WeakReference<DanmakuOverlay> currentOverlay = new WeakReference<>(null);
 
-    private DanmakuPatch() {
-    }
+    private DanmakuPatch() {}
 
     public static void onTheatreCreated(Object theatreViewDelegate) {
         try {
@@ -34,7 +35,7 @@ public final class DanmakuPatch {
     }
 
     public static void onPlayerStateChanged(Object playerViewDelegate, Enum<?> state) {
-        app.morphe.extension.watchlog.WatchTimeTracker.onPlayerState(state);
+        WatchTimeTracker.onPlayerState(state);
         try {
             if (state == null) return;
             String name = state.name();
@@ -59,27 +60,26 @@ public final class DanmakuPatch {
 
     public static void onMessagesReceived(String channelId, List<?> messages, boolean fromHistory) {
         try {
-            NgWordFilter.filter(messages); // NGワード（完全一致）を取り除く
-        } catch (Throwable ignored) {
-        }
+            NgWordFilter.filter(messages);
+        } catch (Throwable ignored) {}
         if (messages == null || messages.isEmpty()) return;
         try {
-            if (!fromHistory) app.morphe.extension.twitch.chat.ChatFlow.record(messages.size());
-        } catch (Throwable ignored) {
-        }
+            if (!fromHistory) ChatFlow.record(messages.size());
+        } catch (Throwable ignored) {}
         try {
-            // 過去コメント（名前タップ）の記録。過去ログの一括読み込みも記録する
-            app.morphe.extension.twitch.chat.ChatHistory.onMessages(channelId, messages, fromHistory);
-        } catch (Throwable ignored) {
-        }
+            ChatHistory.onMessages(channelId, messages, fromHistory);
+        } catch (Throwable ignored) {}
         try {
             if (fromHistory) return;
-            // 弾幕が出ていないときは変換もしない（以前は常に全件を変換していた）
             DanmakuOverlay overlay0 = currentOverlay.get();
-            if (overlay0 == null || !Settings.DANMAKU_ENABLED.get()) return;
+            if (overlay0 == null || !Settings.DANMAKU_ENABLED.get() || !overlay0.isCurrentlyActive()) {
+                return;
+            }
 
-            int level = app.morphe.extension.twitch.chat.ChatFlow.level();
-            List<?> picked = DanmakuMessages.thin(messages, level);
+            List<?> fresh = DanmakuMessages.filterNew(messages);
+            if (fresh.isEmpty()) return;
+            int level = ChatFlow.level();
+            List<?> picked = DanmakuMessages.thin(fresh, level);
             if (picked.isEmpty()) return;
             List<DanmakuComment> comments = DanmakuMessages.toComments(picked);
             if (comments.isEmpty()) return;

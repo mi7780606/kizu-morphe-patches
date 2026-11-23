@@ -13,45 +13,50 @@ import android.view.View;
 
 import java.util.ArrayDeque;
 import java.util.ArrayList;
-import java.util.Iterator;
 
 import io.github.bakwudo.uyu.extension.settings.Setting;
 
 /**
  * Niconico style danmaku. Kizu version:
- * - 普段: 空いた行が出るまで待って流す（重ならない）。同時に届いた分は少しずつずらして流す。
- * - 混雑時: 待機列を短く・少なくして、古いものから弾幕だけ間引く（チャット欄には全部出る）。
- * Must be used on the main thread.
+ * - Sprite-cached comment bitmaps eliminate per-frame CJK stroke rasterization and View.setAlpha()
+ *   full-screen offscreen FBO layers.
+ * - Zero-allocation onDraw loop with smart idle sleep when waiting on queued comments.
  */
 public final class DanmakuView extends View {
     private static final String SETTING_PREFIX = "danmaku_";
     private static final String TAG = "KizuDanmaku";
 
-    // ===== 普段の動き =====
-    private static final long NORMAL_MAX_WAIT_MS = 3000; // 空き行をこれだけ待つ
-    private static final int NORMAL_MAX_PENDING = 150; // 待機列の上限（安全装置）
+    private static final long NORMAL_MAX_WAIT_MS = 3000;
+    private static final int NORMAL_MAX_PENDING = 150;
     private static final int NORMAL_PLACE_PER_FRAME = 8;
     private static final long MIN_SPACING_MS = 16;
     private static final long MAX_SPACING_MS = 250;
-    private static final long MAX_SPREAD_MS = 1000; // 1回分を広げる最大時間
+    private static final long MAX_SPREAD_MS = 1000;
 
-    // ===== 混雑モード =====
-    private static final float OVERLOAD_ENTER_RATE = 30f; // 毎秒これ以上で混雑モード
-    private static final float OVERLOAD_EXIT_RATE = 15f; // これ以下が続いたら解除
+    private static final float OVERLOAD_ENTER_RATE = 30f;
+    private static final float OVERLOAD_EXIT_RATE = 15f;
     private static final long OVERLOAD_HOLD_MS = 3000;
-    private static final int OVERLOAD_ENTER_PENDING = 60; // 待機がこれ以上でも混雑モード
+    private static final int OVERLOAD_ENTER_PENDING = 60;
     private static final long OVERLOAD_MAX_WAIT_MS = 800;
     private static final int OVERLOAD_MAX_PENDING = 15;
     private static final int OVERLOAD_PLACE_PER_FRAME = 3;
+
+    private static final int MAX_SPRITE_CACHE_BYTES = 10 * 1024 * 1024;
+    private static final int MAX_SPRITE_WIDTH = 2048;
+    private static final int MAX_SPRITE_HEIGHT = 256;
 
     private final ArrayList<DanmakuComment> comments = new ArrayList<>();
     private final ArrayList<DanmakuComment> incoming = new ArrayList<>();
     private final ArrayDeque<DanmakuComment> pending = new ArrayDeque<>();
     private boolean[] rowBlocked = new boolean[0];
     private boolean flushPosted;
+    private boolean delayedWakePosted;
     private final Runnable flushRunnable = this::flushIncoming;
+    private final Runnable wakeRunnable = () -> {
+        delayedWakePosted = false;
+        if (!paused && windowVisible) postInvalidateOnAnimation();
+    };
 
-    // 流量の学習
     private long lastBatchAt;
     private float avgGapMs = 500f;
     private long lastDue;
@@ -64,6 +69,8 @@ public final class DanmakuView extends View {
     private final Paint fill = new Paint(Paint.ANTI_ALIAS_FLAG);
     private final Paint stroke = new Paint(Paint.ANTI_ALIAS_FLAG);
     private final Paint imagePaint = new Paint(Paint.FILTER_BITMAP_FLAG);
+    private final Paint bitmapPaint = new Paint(Paint.FILTER_BITMAP_FLAG);
+    private final Canvas spriteCanvas = new Canvas();
     private final RectF imageRect = new RectF();
 
     private final SharedPreferences.OnSharedPreferenceChangeListener settingsListener =
@@ -72,15 +79,20 @@ public final class DanmakuView extends View {
             };
 
     private DanmakuStyle style;
+    private int styleGen = 1;
+    private int spriteCacheBytes;
+    private int opacityAlpha = 255;
     private float lineHeight;
     private float strokeWidth;
     private float baseline;
     private float emoteSize;
+    private int emoteTier;
     private float gap;
 
     private long clock;
     private long lastTick = -1;
     private boolean paused;
+    private boolean windowVisible = true;
 
     public DanmakuView(Context context) {
         super(context);
@@ -94,23 +106,43 @@ public final class DanmakuView extends View {
     protected void onAttachedToWindow() {
         super.onAttachedToWindow();
         Setting.addChangeListener(settingsListener);
+        windowVisible = getWindowVisibility() == View.VISIBLE;
         setStyle(DanmakuStyle.fromSettings());
     }
 
     @Override
     protected void onDetachedFromWindow() {
         Setting.removeChangeListener(settingsListener);
+        removeCallbacks(flushRunnable);
+        removeCallbacks(wakeRunnable);
+        flushPosted = false;
+        delayedWakePosted = false;
         clear();
         super.onDetachedFromWindow();
     }
 
-    void setStyle(DanmakuStyle style) {
-        this.style = style;
-        setAlpha(style.opacity);
-        updateMetrics();
+    @Override
+    protected void onWindowVisibilityChanged(int visibility) {
+        super.onWindowVisibilityChanged(visibility);
+        windowVisible = visibility == View.VISIBLE;
+        if (windowVisible && !paused && (!comments.isEmpty() || !pending.isEmpty())) {
+            lastTick = SystemClock.uptimeMillis();
+            postInvalidateOnAnimation();
+        }
     }
 
-    /** 届いたコメントを受け取る。同じ回に届いた分はまとめてから待機列へ入れる。 */
+    void setStyle(DanmakuStyle nextStyle) {
+        DanmakuStyle prev = this.style;
+        this.style = nextStyle;
+        this.opacityAlpha = Math.max(0, Math.min(255, Math.round(nextStyle.opacity * 255f)));
+        bitmapPaint.setAlpha(opacityAlpha);
+        if (prev == null || !prev.metricsEqual(nextStyle)) {
+            updateMetrics();
+        } else {
+            invalidate();
+        }
+    }
+
     public void addComment(DanmakuComment comment) {
         if (paused || getWidth() == 0 || getHeight() == 0 || comment == null) return;
         incoming.add(comment);
@@ -151,7 +183,7 @@ public final class DanmakuView extends View {
             if (!overload && pending.size() >= OVERLOAD_ENTER_PENDING) enterOverload(now);
             trimPending();
 
-            tick();
+            tick(now);
             placePending(now);
             postInvalidateOnAnimation();
         } catch (Throwable t) {
@@ -205,13 +237,11 @@ public final class DanmakuView extends View {
         lastBatchAt = now;
     }
 
-    /** 待機列が長すぎるときは古いものから弾幕だけ外す */
     private void trimPending() {
         int max = overload ? OVERLOAD_MAX_PENDING : NORMAL_MAX_PENDING;
         while (pending.size() > max) pending.pollFirst();
     }
 
-    /** 待機列の先頭から、流せるものを流す。1コマあたりの数に上限あり。 */
     private void placePending(long now) {
         if (pending.isEmpty() || paused || style == null || getWidth() == 0) return;
         if (overload) trimPending();
@@ -220,15 +250,15 @@ public final class DanmakuView extends View {
         int placed = 0;
         while (!pending.isEmpty() && placed < limit) {
             DanmakuComment c = pending.peekFirst();
-            if (now - c.queuedAt > maxWait) { // 待ちすぎたものは弾幕からだけ外す
+            if (now - c.queuedAt > maxWait) {
                 pending.pollFirst();
                 continue;
             }
             if (c.due > now) break;
             if (comments.size() >= style.maxComments) break;
-            layoutComment(c);
+            if (c.measuredGen != styleGen) layoutComment(c);
             int row = findRow(c.width);
-            if (row < 0) break; // 空き行なし → 次のコマで再挑戦
+            if (row < 0) break;
             pending.pollFirst();
             c.row = row;
             c.start = clock;
@@ -237,18 +267,18 @@ public final class DanmakuView extends View {
         }
     }
 
-    /** 1回の走査で全行の空きを調べる。空きがなければ -1 */
     private int findRow(float width) {
         int rows = style.usableRows;
         if (rows <= 0) return -1;
         if (rowBlocked.length < rows) rowBlocked = new boolean[rows];
         for (int i = 0; i < rows; i++) rowBlocked[i] = false;
         float viewWidth = getWidth();
+        float invDur = style.invDuration;
         for (int i = 0, size = comments.size(); i < size; i++) {
             DanmakuComment other = comments.get(i);
             int r = other.row;
             if (r < 0 || r >= rows || rowBlocked[r]) continue;
-            float remaining = 1 - (clock - other.start) / (float) style.durationMs;
+            float remaining = 1f - (clock - other.start) * invDur;
             if (remaining * (viewWidth + other.width) + gap > viewWidth
                     || remaining * (viewWidth + width) + gap > viewWidth) {
                 rowBlocked[r] = true;
@@ -260,9 +290,10 @@ public final class DanmakuView extends View {
 
     public void setPaused(boolean paused) {
         if (this.paused == paused) return;
-        tick();
+        long now = SystemClock.uptimeMillis();
+        tick(now);
         this.paused = paused;
-        lastTick = paused ? -1 : SystemClock.uptimeMillis();
+        lastTick = paused ? -1 : now;
         if (paused) {
             incoming.clear();
             pending.clear();
@@ -284,21 +315,28 @@ public final class DanmakuView extends View {
     }
 
     public void clear() {
+        boolean hadData = !comments.isEmpty() || !incoming.isEmpty() || !pending.isEmpty() || lastDue != 0;
+        for (int i = 0, n = comments.size(); i < n; i++) {
+            releaseSprite(comments.get(i));
+        }
         comments.clear();
         incoming.clear();
         pending.clear();
         lastDue = 0;
-        invalidate();
+        if (hadData) invalidate();
     }
 
     @Override
     protected void onSizeChanged(int width, int height, int oldWidth, int oldHeight) {
         super.onSizeChanged(width, height, oldWidth, oldHeight);
-        updateMetrics();
+        if (height != oldHeight || lineHeight <= 0f) {
+            updateMetrics();
+        }
     }
 
     private void updateMetrics() {
         if (style == null) return;
+        styleGen++;
         lineHeight = getHeight() / (float) style.rows;
 
         fill.setTypeface(style.typeface);
@@ -308,8 +346,9 @@ public final class DanmakuView extends View {
         float textSize = lineHeight / (heightRatio + style.outlineRatio);
 
         strokeWidth = textSize * style.outlineRatio;
-        baseline = strokeWidth / 2 - metrics.ascent / 100f * textSize;
+        baseline = strokeWidth / 2f - metrics.ascent / 100f * textSize;
         emoteSize = lineHeight - strokeWidth;
+        emoteTier = EmoteImages.tierForSize(emoteSize);
         gap = lineHeight * 0.2f;
 
         fill.setTextSize(textSize);
@@ -319,7 +358,11 @@ public final class DanmakuView extends View {
         stroke.setStrokeWidth(strokeWidth);
         stroke.setColor(style.outlineColor);
 
-        for (DanmakuComment comment : comments) layoutComment(comment);
+        for (int i = 0, n = comments.size(); i < n; i++) {
+            DanmakuComment c = comments.get(i);
+            releaseSprite(c);
+            layoutComment(c);
+        }
         invalidate();
     }
 
@@ -332,28 +375,118 @@ public final class DanmakuView extends View {
             width += partWidth;
         }
         comment.width = width;
+        comment.measuredGen = styleGen;
     }
 
-    private void tick() {
-        long now = SystemClock.uptimeMillis();
+    private void tick(long now) {
         if (!paused && lastTick >= 0) clock += now - lastTick;
         lastTick = paused ? -1 : now;
+    }
+
+    private void releaseSprite(DanmakuComment c) {
+        if (c.sprite != null) {
+            spriteCacheBytes = Math.max(0, spriteCacheBytes - c.spriteBytes);
+            c.sprite = null;
+        }
+        c.spriteBytes = 0;
+        c.spriteGen = 0;
+        c.spriteComplete = false;
+    }
+
+    private boolean hasAllEmotesReady(DanmakuComment comment) {
+        for (int i = 0; i < comment.parts.length; i++) {
+            if (comment.parts[i] instanceof DanmakuComment.Emote emote) {
+                if (EmoteImages.get(emote, emoteTier) == null) return false;
+            }
+        }
+        return true;
+    }
+
+    private void ensureSprite(DanmakuComment comment, boolean drawOutline) {
+        if (comment.sprite != null && comment.spriteGen == styleGen) {
+            if (comment.spriteComplete) return;
+            if (!hasAllEmotesReady(comment)) return;
+            // Missing emote finished loading; re-render once into existing bitmap.
+            renderIntoSprite(comment, comment.sprite, drawOutline);
+            return;
+        }
+        releaseSprite(comment);
+
+        int w = (int) Math.ceil(comment.width + 2f);
+        int h = (int) Math.ceil(lineHeight + 2f);
+        if (w <= 0 || h <= 0 || w > MAX_SPRITE_WIDTH || h > MAX_SPRITE_HEIGHT) return;
+        int bytes = w * h * 4;
+        if (spriteCacheBytes + bytes > MAX_SPRITE_CACHE_BYTES) return;
+
+        Bitmap bmp;
+        try {
+            bmp = Bitmap.createBitmap(w, h, Bitmap.Config.ARGB_8888);
+        } catch (OutOfMemoryError ignored) {
+            return;
+        }
+        spriteCacheBytes += bytes;
+        comment.sprite = bmp;
+        comment.spriteBytes = bytes;
+        comment.spriteGen = styleGen;
+        renderIntoSprite(comment, bmp, drawOutline);
+    }
+
+    private void renderIntoSprite(DanmakuComment comment, Bitmap bmp, boolean drawOutline) {
+        bmp.eraseColor(Color.TRANSPARENT);
+        spriteCanvas.setBitmap(bmp);
+
+        // Keep full color alpha inside sprite; opacity is applied once when blitting via bitmapPaint.
+        fill.setColor(style.textColor);
+        stroke.setColor(style.outlineColor);
+        imagePaint.setAlpha(255);
+
+        float x = strokeWidth / 2f;
+        boolean complete = true;
+        for (int i = 0; i < comment.parts.length; i++) {
+            Object part = comment.parts[i];
+            float partWidth = comment.partWidths[i];
+            if (part instanceof String text) {
+                if (drawOutline) spriteCanvas.drawText(text, x, baseline, stroke);
+                spriteCanvas.drawText(text, x, baseline, fill);
+            } else if (part instanceof DanmakuComment.Emote emote) {
+                Bitmap eb = EmoteImages.get(emote, emoteTier);
+                if (eb == null) {
+                    complete = false;
+                } else {
+                    drawEmoteBitmap(spriteCanvas, eb, x, strokeWidth / 2f);
+                }
+            }
+            x += partWidth;
+        }
+        spriteCanvas.setBitmap(null);
+        comment.spriteComplete = complete;
     }
 
     @Override
     protected void onDraw(Canvas canvas) {
         super.onDraw(canvas);
-        tick();
+        if (style == null || getWidth() == 0 || getHeight() == 0) return;
+
+        long now = SystemClock.uptimeMillis();
+        tick(now);
 
         float viewWidth = getWidth();
-        // 先に流し終わったものを外してから、新しいものを入れる
-        Iterator<DanmakuComment> it = comments.iterator();
-        while (it.hasNext()) {
-            DanmakuComment c = it.next();
-            if ((clock - c.start) / (float) style.durationMs >= 1) it.remove();
+        float invDur = style.invDuration;
+        int write = 0;
+        for (int read = 0, size = comments.size(); read < size; read++) {
+            DanmakuComment c = comments.get(read);
+            if ((clock - c.start) * invDur >= 1f) {
+                releaseSprite(c);
+            } else {
+                comments.set(write++, c);
+            }
         }
+        if (write < comments.size()) {
+            comments.subList(write, comments.size()).clear();
+        }
+
         try {
-            placePending(SystemClock.uptimeMillis());
+            placePending(now);
         } catch (Throwable t) {
             Log.e(TAG, "place failed", t);
             pending.clear();
@@ -362,9 +495,22 @@ public final class DanmakuView extends View {
         boolean drawOutline = strokeWidth > 0 && Color.alpha(style.outlineColor) > 0;
         for (int n = 0, size = comments.size(); n < size; n++) {
             DanmakuComment comment = comments.get(n);
-            float progress = (clock - comment.start) / (float) style.durationMs;
-            float x = viewWidth - progress * (viewWidth + comment.width) + strokeWidth / 2;
+            float progress = (clock - comment.start) * invDur;
+            float baseX = viewWidth - progress * (viewWidth + comment.width);
             float top = comment.row * lineHeight;
+
+            ensureSprite(comment, drawOutline);
+            if (comment.sprite != null) {
+                canvas.drawBitmap(comment.sprite, baseX, top, bitmapPaint);
+                continue;
+            }
+
+            // Direct draw fallback for ultra-wide comments exceeding MAX_SPRITE_WIDTH or cache budget.
+            fill.setColor(scaleAlpha(style.textColor, opacityAlpha));
+            if (drawOutline) stroke.setColor(scaleAlpha(style.outlineColor, opacityAlpha));
+            imagePaint.setAlpha(opacityAlpha);
+
+            float x = baseX + strokeWidth / 2f;
             for (int i = 0; i < comment.parts.length; i++) {
                 Object part = comment.parts[i];
                 float partWidth = comment.partWidths[i];
@@ -373,24 +519,42 @@ public final class DanmakuView extends View {
                         if (drawOutline) canvas.drawText(text, x, top + baseline, stroke);
                         canvas.drawText(text, x, top + baseline, fill);
                     } else if (part instanceof DanmakuComment.Emote emote) {
-                        drawEmote(canvas, emote, x, top + strokeWidth / 2);
+                        Bitmap eb = EmoteImages.get(emote, emoteTier);
+                        if (eb != null) drawEmoteBitmap(canvas, eb, x, top + strokeWidth / 2f);
                     }
                 }
                 x += partWidth;
             }
         }
 
-        if ((!comments.isEmpty() || !pending.isEmpty()) && !paused) postInvalidateOnAnimation();
+        if (!paused && windowVisible) {
+            if (!comments.isEmpty()) {
+                postInvalidateOnAnimation();
+            } else if (!pending.isEmpty()) {
+                DanmakuComment head = pending.peekFirst();
+                long wait = head == null ? 0L : head.due - now;
+                if (wait <= 16L) {
+                    postInvalidateOnAnimation();
+                } else if (!delayedWakePosted) {
+                    delayedWakePosted = true;
+                    postOnAnimationDelayed(wakeRunnable, Math.min(wait, 1000L));
+                }
+            }
+        }
     }
 
-    private void drawEmote(Canvas canvas, DanmakuComment.Emote emote, float left, float top) {
-        Bitmap bitmap = EmoteImages.get(emote.id, emoteSize);
-        if (bitmap == null) return;
+    private static int scaleAlpha(int color, int opacityAlpha) {
+        if (opacityAlpha >= 255) return color;
+        int a = (Color.alpha(color) * opacityAlpha) / 255;
+        return (color & 0x00FFFFFF) | (a << 24);
+    }
+
+    private void drawEmoteBitmap(Canvas canvas, Bitmap bitmap, float left, float top) {
         float scale = emoteSize / Math.max(bitmap.getWidth(), bitmap.getHeight());
         float width = bitmap.getWidth() * scale;
         float height = bitmap.getHeight() * scale;
-        float x = left + (emoteSize - width) / 2;
-        float y = top + (emoteSize - height) / 2;
+        float x = left + (emoteSize - width) / 2f;
+        float y = top + (emoteSize - height) / 2f;
         imageRect.set(x, y, x + width, y + height);
         canvas.drawBitmap(bitmap, null, imageRect, imagePaint);
     }

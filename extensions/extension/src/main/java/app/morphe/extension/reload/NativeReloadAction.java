@@ -22,10 +22,12 @@ public final class NativeReloadAction {
     public static synchronized NativeReloadAction forVolume(Object callback) {
         NativeReloadAction action = callback instanceof NativeReloadOwner
                 ? actions.get(((NativeReloadOwner) callback).reloadControlsOwner()) : null;
-        String category = callback instanceof NativeReloadOwner ? "mapped" : "unmapped";
-        String binding = category + (action == null ? " unavailable" : action.available() ? " ready" : " not ready");
-        if (observedBindings.size() < 16 && observedBindings.add(binding)) {
-            Log.i("KizuReload", binding);
+        if (observedBindings.size() < 16) {
+            String category = callback instanceof NativeReloadOwner ? "mapped" : "unmapped";
+            String binding = category + (action == null ? " unavailable" : action.available() ? " ready" : " not ready");
+            if (observedBindings.add(binding)) {
+                Log.i("KizuReload", binding);
+            }
         }
         return action;
     }

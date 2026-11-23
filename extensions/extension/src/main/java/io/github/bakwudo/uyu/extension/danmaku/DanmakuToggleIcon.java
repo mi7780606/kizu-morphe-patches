@@ -18,11 +18,14 @@ import android.graphics.drawable.Drawable;
 final class DanmakuToggleIcon extends Drawable {
     private final Paint paint = new Paint(Paint.ANTI_ALIAS_FLAG);
     private final Path path = new Path();
-    private final RectF bubble = new RectF();
+    private final RectF corner = new RectF();
     private final int intrinsicSize;
     private ColorStateList tint = ColorStateList.valueOf(0xFFFFFFFF);
     private int alpha = 255;
     private boolean on;
+    private float cachedLeft = Float.NaN;
+    private float cachedTop = Float.NaN;
+    private float cachedSize = Float.NaN;
 
     DanmakuToggleIcon(int intrinsicSize) {
         this.intrinsicSize = intrinsicSize;
@@ -32,6 +35,7 @@ final class DanmakuToggleIcon extends Drawable {
     }
 
     void setOn(boolean on) {
+        if (this.on == on) return;
         this.on = on;
         invalidateSelf();
     }
@@ -40,33 +44,52 @@ final class DanmakuToggleIcon extends Drawable {
     public void draw(Canvas canvas) {
         Rect bounds = getBounds();
         float size = Math.min(bounds.width(), bounds.height());
-        float left = bounds.exactCenterX() - size / 2;
-        float top = bounds.exactCenterY() - size / 2;
+        if (size <= 0) return;
+        float left = bounds.exactCenterX() - size / 2f;
+        float top = bounds.exactCenterY() - size / 2f;
         float unit = size / 24f;
 
+        if (left != cachedLeft || top != cachedTop || size != cachedSize) {
+            cachedLeft = left;
+            cachedTop = top;
+            cachedSize = size;
+            rebuildBubblePath(left, top, unit);
+        }
+
         int color = tint.getColorForState(getState(), tint.getDefaultColor());
+        int fullAlpha = Color.alpha(color) * alpha / 255;
         paint.setColor(color);
-        paint.setAlpha(Color.alpha(color) * alpha / 255);
+        paint.setAlpha(on ? fullAlpha : Math.round(fullAlpha * 0.55f));
         paint.setStrokeWidth(2 * unit);
 
-        // Bubble from (3, 4) to (21, 17), with a tail down to (7, 21).
-        bubble.set(left + 3 * unit, top + 4 * unit, left + 21 * unit, top + 17 * unit);
-        path.reset();
-        path.addRoundRect(bubble, 3 * unit, 3 * unit, Path.Direction.CW);
         canvas.drawPath(path, paint);
-        path.reset();
-        path.moveTo(left + 7 * unit, top + 17 * unit);
-        path.lineTo(left + 7 * unit, top + 21 * unit);
-        path.lineTo(left + 11.5f * unit, top + 17 * unit);
-        canvas.drawPath(path, paint);
-
-        // Two lines of text.
         canvas.drawLine(left + 7 * unit, top + 9 * unit, left + 17 * unit, top + 9 * unit, paint);
         canvas.drawLine(left + 7 * unit, top + 12.5f * unit, left + 14 * unit, top + 12.5f * unit, paint);
 
         if (!on) {
-            canvas.drawLine(left + 2.5f * unit, top + 2.5f * unit, left + 21.5f * unit, top + 21.5f * unit, paint);
+            paint.setAlpha(fullAlpha);
+            canvas.drawLine(left + 3 * unit, top + 3 * unit, left + 21 * unit, top + 21 * unit, paint);
         }
+    }
+
+    private void rebuildBubblePath(float left, float top, float unit) {
+        path.reset();
+        path.moveTo(left + 11.5f * unit, top + 17 * unit);
+        path.lineTo(left + 18 * unit, top + 17 * unit);
+        corner.set(left + 15 * unit, top + 11 * unit, left + 21 * unit, top + 17 * unit);
+        path.arcTo(corner, 90, -90, false);
+        path.lineTo(left + 21 * unit, top + 7 * unit);
+        corner.set(left + 15 * unit, top + 4 * unit, left + 21 * unit, top + 10 * unit);
+        path.arcTo(corner, 0, -90, false);
+        path.lineTo(left + 6 * unit, top + 4 * unit);
+        corner.set(left + 3 * unit, top + 4 * unit, left + 9 * unit, top + 10 * unit);
+        path.arcTo(corner, 270, -90, false);
+        path.lineTo(left + 3 * unit, top + 14 * unit);
+        corner.set(left + 3 * unit, top + 11 * unit, left + 9 * unit, top + 17 * unit);
+        path.arcTo(corner, 180, -90, false);
+        path.lineTo(left + 7 * unit, top + 17 * unit);
+        path.lineTo(left + 7 * unit, top + 20.8f * unit);
+        path.close();
     }
 
     @Override

@@ -1,16 +1,14 @@
 package app.morphe.extension.appearance;
 
 import android.app.Activity;
-import android.app.AlertDialog;
+import android.app.Dialog;
 import android.content.Context;
-import android.graphics.Color;
 import android.text.InputType;
 import android.util.Log;
 import android.util.TypedValue;
 import android.view.Gravity;
 import android.view.View;
 import android.view.ViewGroup;
-import android.view.ViewTreeObserver;
 import android.widget.EditText;
 import android.widget.ImageView;
 import android.widget.LinearLayout;
@@ -18,186 +16,214 @@ import android.widget.Switch;
 import android.widget.TextView;
 
 import java.lang.ref.WeakReference;
-import java.util.Map;
-import java.util.WeakHashMap;
 
+import app.morphe.extension.Utils;
+import app.morphe.extension.channelpoints.TvBet;
+import app.morphe.extension.settings.SettingsUi;
+import app.morphe.extension.settings.TwitchUi;
 import io.github.bakwudo.uyu.extension.settings.KizuSettings;
 
 /** 三点リーダーの非表示と、チャンネルポイント画面への「予想の自動参加」ボタン追加 */
 public final class KizuUiTweaks {
     private static final String TAG = "KizuUiTweaks";
     private static final String BUTTON_TAG = "kizu_prediction_button";
-    private static final long DELAY_MS = 250;
-
-    private static final Map<View, Boolean> ROOTS = new WeakHashMap<>();
-    private static int chatMenuId = -1, outerId, headerId, moreId;
 
     private KizuUiTweaks() {}
 
-    public static void onActivityStarted(Activity activity) {
-        if (activity == null || activity.getWindow() == null) return;
-        try {
-            View decor = activity.getWindow().getDecorView();
-            if (decor == null || ROOTS.containsKey(decor)) return;
-            ROOTS.put(decor, Boolean.TRUE);
-            if (chatMenuId == -1) {
-                String pkg = activity.getPackageName();
-                chatMenuId = activity.getResources().getIdentifier("view_chat_settings", "id", pkg);
-                outerId = activity.getResources().getIdentifier("community_points_outer_container", "id", pkg);
-                headerId = activity.getResources().getIdentifier("header_container", "id", pkg);
-                moreId = activity.getResources().getIdentifier("more_button", "id", pkg);
-            }
-            Watcher w = new Watcher(decor);
-            decor.getViewTreeObserver().addOnGlobalLayoutListener(w);
-            w.schedule();
-        } catch (Throwable t) {
-            Log.e(TAG, "attach failed", t);
-        }
+    public static void bindChatMenuButton(View chatMenuButton) {
+        if (chatMenuButton == null) return;
+        HiddenView.attach(chatMenuButton, view -> KizuSettings.HIDE_CHAT_MENU_BUTTON.get(), true);
     }
 
-    private static final class Watcher implements ViewTreeObserver.OnGlobalLayoutListener, Runnable {
-        final WeakReference<View> ref;
-        boolean posted;
-
-        Watcher(View root) { ref = new WeakReference<>(root); }
-
-        @Override public void onGlobalLayout() {
-            View root = ref.get();
-            if (root != null) hideChatMenu(root); // ちらつき防止にすぐ隠す
-            schedule();
-        }
-
-        void schedule() {
-            View root = ref.get();
-            if (root == null || posted) return;
-            posted = true;
-            root.postDelayed(this, DELAY_MS);
-        }
-
-        @Override public void run() {
-            posted = false;
-            View root = ref.get();
-            if (root == null) return;
-            try {
-                hideChatMenu(root);
-                addPredictionButton(root);
-                try { KizuRecommended.update(root); } catch (Throwable t) { Log.e(TAG, "recommended failed", t); }
-            } catch (Throwable t) {
-                Log.e(TAG, "scan failed", t);
-            }
-        }
-    }
-
-    private static void hideChatMenu(View root) {
-        if (chatMenuId == 0) return;
-        boolean hide;
-        try { hide = KizuSettings.HIDE_CHAT_MENU_BUTTON.get(); } catch (Throwable t) { hide = true; }
-        if (!hide) return;
-        View v = root.findViewById(chatMenuId);
-        if (v != null && v.getVisibility() != View.GONE) v.setVisibility(View.GONE);
-    }
-
-    private static void addPredictionButton(View root) {
-        if (outerId == 0 || headerId == 0) return;
-        View outer = root.findViewById(outerId);
+    public static void bindCommunityPoints(View outer) {
         if (outer == null) return;
+        Context c = outer.getContext();
+        int headerId = Utils.getResourceId(c, "header_container", "id");
+        if (headerId == 0) return;
         View h = outer.findViewById(headerId);
-        if (!(h instanceof LinearLayout)) return;
-        LinearLayout header = (LinearLayout) h;
+        if (!(h instanceof LinearLayout header)) return;
+        int moreId = Utils.getResourceId(c, "more_button", "id");
         View more = moreId != 0 ? header.findViewById(moreId) : null;
         addPredictionButtonTo(header, more);
     }
 
+    /** Lightweight one-shot fallback at Activity start in case views already existed before ViewDelegate hooks. */
+    public static void onActivityStarted(Activity activity) {
+        if (activity == null || activity.getWindow() == null) return;
+        try {
+            View decor = activity.getWindow().getDecorView();
+            if (decor == null) return;
+            WeakReference<View> ref = new WeakReference<>(decor);
+            decor.post(() -> {
+                View root = ref.get();
+                if (root == null) return;
+                try {
+                    Context c = root.getContext();
+                    int chatMenuId = Utils.getResourceId(c, "view_chat_settings", "id");
+                    if (chatMenuId != 0) {
+                        View chatMenu = root.findViewById(chatMenuId);
+                        if (chatMenu != null) bindChatMenuButton(chatMenu);
+                    }
+                    int outerId = Utils.getResourceId(c, "community_points_outer_container", "id");
+                    if (outerId != 0) {
+                        View outer = root.findViewById(outerId);
+                        if (outer != null) bindCommunityPoints(outer);
+                    }
+                } catch (Throwable ignored) {}
+            });
+        } catch (Throwable t) {
+            Log.e(TAG, "fallback attach failed", t);
+        }
+    }
+
     /** チャンネルポイント画面の見出しに「予想」ボタンを置く（予想がなくても常に出す） */
     static void addPredictionButtonTo(LinearLayout header, View before) {
-        if (header.findViewWithTag(BUTTON_TAG) != null) return;
+        if (header == null || header.findViewWithTag(BUTTON_TAG) != null) return;
         Context c = header.getContext();
         float d = c.getResources().getDisplayMetrics().density;
         TextView b = new TextView(c);
         b.setTag(BUTTON_TAG);
         b.setText("予想");
-        b.setTextSize(TypedValue.COMPLEX_UNIT_SP, 13);
-        b.setTextColor(0xFFBF94FF);
+        b.setTextSize(TypedValue.COMPLEX_UNIT_SP, 14);
+        b.setTypeface(android.graphics.Typeface.DEFAULT_BOLD);
+        b.setTextColor(SettingsUi.accentColor(c));
         b.setGravity(Gravity.CENTER);
-        b.setPadding((int) (8 * d), 0, (int) (8 * d), 0);
+        b.setPadding(Math.round(10 * d), 0, Math.round(10 * d), 0);
+        b.setMinHeight(Math.round(36 * d));
+        b.setBackground(TwitchUi.ripple(c, null, 8f * d));
         b.setContentDescription("予想の自動参加の設定");
+        b.setClickable(true);
+        b.setFocusable(true);
         b.setOnClickListener(v -> showDialog(v.getContext()));
         int i = before == null ? -1 : header.indexOfChild(before);
         int index = i >= 0 ? i : header.getChildCount();
         LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(
                 ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT);
         lp.gravity = Gravity.CENTER_VERTICAL;
-        b.setMinHeight((int) (40 * d));
-        b.setTextSize(TypedValue.COMPLEX_UNIT_SP, 15);
         header.addView(b, index, lp);
     }
+
     private static void showDialog(Context c) {
         try {
-            float d = c.getResources().getDisplayMetrics().density;
-            int pad = (int) (20 * d);
-            LinearLayout box = new LinearLayout(c);
-            box.setOrientation(LinearLayout.VERTICAL);
-            box.setPadding(pad, (int) (8 * d), pad, 0);
+            Dialog dlg = TwitchUi.createBottomSheet(c);
+            int pad = TwitchUi.dp(c, 16f);
 
-            final AlertDialog[] self = new AlertDialog[1];
-            android.widget.Button betNow = new android.widget.Button(c);
-            betNow.setText("今すぐ賭ける（手動）");
-            betNow.setAllCaps(false);
+            LinearLayout root = new LinearLayout(c);
+            root.setOrientation(LinearLayout.VERTICAL);
+            root.setPadding(pad, 0, pad, pad);
+            root.addView(TwitchUi.dragHandle(c));
+
+            LinearLayout header = new LinearLayout(c);
+            header.setOrientation(LinearLayout.HORIZONTAL);
+            header.setGravity(Gravity.CENTER_VERTICAL);
+            header.setPadding(0, TwitchUi.dp(c, 4f), 0, TwitchUi.dp(c, 12f));
+
+            int iconRes = Utils.getResourceId(c, "ic_prediction_event", "drawable");
+            if (iconRes != 0) {
+                ImageView icon = new ImageView(c);
+                icon.setImageResource(iconRes);
+                icon.setColorFilter(SettingsUi.accentColor(c));
+                LinearLayout.LayoutParams ilp = new LinearLayout.LayoutParams(
+                        TwitchUi.dp(c, 20f), TwitchUi.dp(c, 20f));
+                ilp.rightMargin = TwitchUi.dp(c, 8f);
+                header.addView(icon, ilp);
+            }
+
+            TextView title = new TextView(c);
+            title.setText("予想");
+            title.setTextColor(SettingsUi.primaryTextColor(c));
+            title.setTextSize(TypedValue.COMPLEX_UNIT_SP, 17f);
+            title.setTypeface(android.graphics.Typeface.DEFAULT_BOLD);
+            header.addView(title, new LinearLayout.LayoutParams(0, -2, 1f));
+            header.addView(TwitchUi.createCloseButton(c, dlg::dismiss));
+            root.addView(header);
+
+            TextView betNow = TwitchUi.createPrimaryButton(c, "今すぐ賭ける（手動）");
             betNow.setOnClickListener(v -> {
-                try { if (self[0] != null) self[0].dismiss(); } catch (Throwable ignored) {}
-                app.morphe.extension.channelpoints.TvBet.open(c);
+                try { dlg.dismiss(); } catch (Throwable ignored) {}
+                TvBet.open(c);
             });
-            box.addView(betNow);
+            LinearLayout.LayoutParams betLp = new LinearLayout.LayoutParams(-1, -2);
+            betLp.bottomMargin = TwitchUi.dp(c, 14f);
+            root.addView(betNow, betLp);
+
+            root.addView(TwitchUi.divider(c));
+
+            LinearLayout autoRow = new LinearLayout(c);
+            autoRow.setOrientation(LinearLayout.HORIZONTAL);
+            autoRow.setGravity(Gravity.CENTER_VERTICAL);
+            autoRow.setPadding(0, TwitchUi.dp(c, 12f), 0, TwitchUi.dp(c, 4f));
+            TextView autoLabel = new TextView(c);
+            autoLabel.setText("自動で参加する");
+            autoLabel.setTextColor(SettingsUi.primaryTextColor(c));
+            autoLabel.setTextSize(TypedValue.COMPLEX_UNIT_SP, 15f);
+            autoLabel.setTypeface(android.graphics.Typeface.DEFAULT_BOLD);
+            autoRow.addView(autoLabel, new LinearLayout.LayoutParams(0, -2, 1f));
 
             Switch auto = new Switch(c);
-            auto.setText("自動で参加する");
-            auto.setTextColor(Color.WHITE);
             auto.setChecked(KizuSettings.PREDICTION_AUTO.get());
-            box.addView(auto);
+            TwitchUi.styleSwitch(c, auto);
+            autoRow.addView(auto);
+            autoRow.setOnClickListener(v -> auto.toggle());
+            root.addView(autoRow);
 
-            box.addView(label(c, d, "賭ける番号（1が一番上の選択肢）"));
+            root.addView(label(c, "賭ける番号（1が一番上の選択肢）"));
             EditText outcome = number(c, String.valueOf(KizuSettings.PREDICTION_OUTCOME.get()));
-            box.addView(outcome);
+            root.addView(outcome);
 
-            box.addView(label(c, d, "賭けるポイント"));
+            root.addView(label(c, "賭けるポイント"));
             EditText points = number(c, String.valueOf(KizuSettings.PREDICTION_POINTS.get()));
-            box.addView(points);
+            root.addView(points);
 
-            TextView note = label(c, d, "予想が始まると、10秒以内に自動で賭けます。番号が選択肢の数より大きいときは一番下に賭けます。");
-            note.setTextSize(TypedValue.COMPLEX_UNIT_SP, 12);
-            box.addView(note);
+            TextView note = new TextView(c);
+            note.setText("予想が始まると、10秒以内に自動で賭けます。番号が選択肢の数より大きいときは一番下に賭けます。");
+            note.setTextColor(SettingsUi.secondaryTextColor(c));
+            note.setTextSize(TypedValue.COMPLEX_UNIT_SP, 12f);
+            note.setPadding(0, TwitchUi.dp(c, 10f), 0, 0);
+            root.addView(note);
 
-            self[0] = new AlertDialog.Builder(c, android.R.style.Theme_Material_Dialog_Alert)
-                    .setTitle("予想")
-                    .setView(box)
-                    .setNegativeButton("キャンセル", null)
-                    .setPositiveButton("保存", (dialog, which) -> {
-                        KizuSettings.PREDICTION_AUTO.save(auto.isChecked());
-                        KizuSettings.PREDICTION_OUTCOME.save(clamp(outcome, 1, 10, 1));
-                        KizuSettings.PREDICTION_POINTS.save(clamp(points, 1, 250000, 100));
-                    })
-                    .create();
-            self[0].show();
+            LinearLayout actions = new LinearLayout(c);
+            actions.setOrientation(LinearLayout.HORIZONTAL);
+            actions.setPadding(0, TwitchUi.dp(c, 16f), 0, 0);
+            TextView cancel = TwitchUi.createSecondaryButton(c, "キャンセル");
+            cancel.setOnClickListener(v -> dlg.dismiss());
+            LinearLayout.LayoutParams clp = new LinearLayout.LayoutParams(0, -2, 1f);
+            clp.rightMargin = TwitchUi.dp(c, 8f);
+            actions.addView(cancel, clp);
+
+            TextView save = TwitchUi.createPrimaryButton(c, "保存");
+            save.setOnClickListener(v -> {
+                KizuSettings.PREDICTION_AUTO.save(auto.isChecked());
+                KizuSettings.PREDICTION_OUTCOME.save(clamp(outcome, 1, 10, 1));
+                KizuSettings.PREDICTION_POINTS.save(clamp(points, 1, 250000, 100));
+                dlg.dismiss();
+            });
+            actions.addView(save, new LinearLayout.LayoutParams(0, -2, 1f));
+            root.addView(actions);
+
+            TwitchUi.prepareBottomSheet(dlg, c, root);
+            dlg.setContentView(root);
+            dlg.show();
         } catch (Throwable t) {
             Log.e(TAG, "dialog failed", t);
         }
     }
 
-    private static TextView label(Context c, float d, String s) {
+    private static TextView label(Context c, String s) {
         TextView t = new TextView(c);
         t.setText(s);
-        t.setTextColor(0xFFDDDDDD);
-        t.setTextSize(TypedValue.COMPLEX_UNIT_SP, 14);
-        t.setPadding(0, (int) (12 * d), 0, 0);
+        t.setTextColor(SettingsUi.secondaryTextColor(c));
+        t.setTextSize(TypedValue.COMPLEX_UNIT_SP, 13f);
+        t.setPadding(0, TwitchUi.dp(c, 10f), 0, TwitchUi.dp(c, 4f));
         return t;
     }
 
     private static EditText number(Context c, String value) {
-        EditText e = new EditText(c);
+        EditText e = TwitchUi.createPillInput(c, "");
         e.setInputType(InputType.TYPE_CLASS_NUMBER);
         e.setText(value);
-        e.setTextColor(Color.WHITE);
         e.setSingleLine(true);
+        e.setSelection(e.length());
         return e;
     }
 

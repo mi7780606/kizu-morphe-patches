@@ -80,6 +80,13 @@ public final class ChatSmoothScroll {
             if (broken) { if (offset != 0f) reset(); return true; }
             try {
                 long now = SystemClock.uptimeMillis();
+                if (offset <= 0f && (suspended || now - lastDeliverAt > RECENT_MS || !enabled())) {
+                    if (offset != 0f) reset();
+                    int n = rv.getChildCount();
+                    remember(n > 0 ? rv.getChildAt(n - 1) : null);
+                    lastFrame = now;
+                    return true;
+                }
                 int n = rv.getChildCount();
                 View last = n > 0 ? rv.getChildAt(n - 1) : null;
 

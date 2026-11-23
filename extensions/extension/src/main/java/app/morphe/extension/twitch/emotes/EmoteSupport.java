@@ -1,34 +1,34 @@
 package app.morphe.extension.twitch.emotes;
 
-import android.util.Log;
 import android.text.Spannable;
 import android.text.SpannableStringBuilder;
 import android.text.Spanned;
 import android.text.SpannedString;
 import android.text.method.LinkMovementMethod;
 import android.text.style.ReplacementSpan;
+import android.util.Log;
 import android.view.View;
 import android.widget.TextView;
 
-import app.morphe.extension.twitch.chat.MentionSupport;
-import app.morphe.extension.twitch.chat.DeletedMessagesSupport;
-
-import java.util.ArrayList;
-import java.util.Collections;
-import java.util.HashSet;
-import java.util.LinkedHashMap;
-import java.util.List;
-import java.util.Map;
-import java.util.Set;
 import java.lang.reflect.Field;
 import java.lang.reflect.Method;
 import java.text.SimpleDateFormat;
+import java.util.ArrayList;
+import java.util.Collections;
 import java.util.Date;
+import java.util.HashSet;
+import java.util.LinkedHashMap;
+import java.util.List;
 import java.util.Locale;
+import java.util.Map;
+import java.util.Set;
+import java.util.WeakHashMap;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
-import java.util.WeakHashMap;
 
+import app.morphe.extension.twitch.chat.DeletedMessagesSupport;
+import app.morphe.extension.twitch.chat.MentionSupport;
 import io.github.bakwudo.uyu.extension.Utils;
 import io.github.bakwudo.uyu.extension.settings.Settings;
 
@@ -39,6 +39,22 @@ public final class EmoteSupport {
             "(?:timestamp|createdAt|sentAt|time)\\s*=\\s*([^,}\\)]+)",
             Pattern.CASE_INSENSITIVE
     );
+    private static final Pattern EXISTING_TIMESTAMP_PATTERN = Pattern.compile(
+            "^\\s*\\[?\\d{1,2}:\\d{2}(?:[:.]\\d{2})?(?:\\s?[APap][Mm])?\\]?\\s+.*$",
+            Pattern.DOTALL
+    );
+    private static final String[] TIMESTAMP_MEMBERS = {
+            "getTimestamp", "timestamp", "getCreatedAt", "createdAt",
+            "getSentAt", "sentAt", "getTime", "time"
+    };
+    private static final Object TIMESTAMP_REGEX_FALLBACK = new Object();
+    private static final ConcurrentHashMap<Class<?>, Object> TIMESTAMP_ACCESSORS =
+            new ConcurrentHashMap<>();
+    private static final ThreadLocal<SimpleDateFormat> FMT_24 =
+            ThreadLocal.withInitial(() -> new SimpleDateFormat("HH:mm", Locale.getDefault()));
+    private static final ThreadLocal<SimpleDateFormat> FMT_12 =
+            ThreadLocal.withInitial(() -> new SimpleDateFormat("h:mm a", Locale.getDefault()));
+
     private static final WeakHashMap<TextView, BoundMessage> BOUND_MESSAGES = new WeakHashMap<>();
     private static final EmoteCatalog CATALOG = new EmoteCatalog(EmoteSupport::refreshCatalog);
     private static final EmoteImageLoader IMAGES = new EmoteImageLoader(EmoteSupport::refreshImage);
@@ -47,8 +63,6 @@ public final class EmoteSupport {
             new View.OnAttachStateChangeListener() {
                 @Override
                 public void onViewAttachedToWindow(View view) {
-                    // Runs on the chat RecyclerView's views; a throw here would be uncaught on the UI
-                    // thread and crash Twitch, so keep it contained.
                     try {
                         TextView textView = (TextView) view;
                         BoundMessage message;
@@ -58,49 +72,40 @@ public final class EmoteSupport {
                         if (message != null) {
                             scheduleRender(textView, message);
                         }
-                    } catch (Throwable ignored) {
-                    }
+                    } catch (Throwable ignored) {}
                 }
 
                 @Override
                 public void onViewDetachedFromWindow(View view) {
                     try {
                         stopAnimations(((TextView) view).getText());
-                        // 画面(Activity)が終了済みなら保持をやめる。値の Span が TextView を参照し続け、画面ごと解放されなくなるため
                         if (isScreenGone(view)) forget((TextView) view);
-                    } catch (Throwable ignored) {
-                    }
+                    } catch (Throwable ignored) {}
                 }
             };
 
     private static volatile String lastRoomId;
     private static volatile String lastRoomName;
 
-    private EmoteSupport() {
-    }
+    private EmoteSupport() {}
 
-    public static void init(android.content.Context context) {
-        // Runtime initialization is driven by chat row binding; keep this entry point for the
-        // common Morphe extension bootstrap.
-    }
+    public static void init(android.content.Context context) {}
 
     public static String getCurrentChannelId() {
         return lastRoomId;
     }
 
-    public static java.util.List<Emote> getAllForChannel(String channelId) {
+    public static List<Emote> getAllForChannel(String channelId) {
         try {
             if (channelId != null && Utils.getContext() != null) {
                 CATALOG.ensureLoaded(Utils.getContext(), channelId);
             }
             return CATALOG.getAllForChannel(channelId);
         } catch (Throwable ignored) {
-            return java.util.Collections.emptyList();
+            return Collections.emptyList();
         }
     }
 
-    // Patched into Twitch's ChannelChatConnectionKey constructor. That constructor has no handler of
-    // its own, so a throw here would abort chat-connection setup; never let anything escape. (#196)
     public static void onChannelChanged(String channelId, String channelName) {
         app.morphe.extension.watchlog.WatchTimeTracker.onChannelChanged(channelId, channelName);
         try {
@@ -116,8 +121,7 @@ public final class EmoteSupport {
                 }
                 EmoteAutocomplete.refreshAll();
             }
-        } catch (Throwable ignored) {
-        }
+        } catch (Throwable ignored) {}
     }
 
     static EmoteCatalog pickerCatalog() { return CATALOG; }
@@ -134,8 +138,7 @@ public final class EmoteSupport {
     static void requestAutocompleteImage(android.content.Context context, Emote emote, int targetHeight) {
         try {
             if (context != null && emote != null) IMAGES.request(context, emote, targetHeight);
-        } catch (Throwable ignored) {
-        }
+        } catch (Throwable ignored) {}
     }
 
     static void ensureAutocompleteCatalog(android.content.Context context) {
@@ -144,24 +147,22 @@ public final class EmoteSupport {
                 NativeEmoteCatalog.ensureLoaded(context);
                 CATALOG.ensureLoaded(context, lastRoomId);
             }
-        } catch (Throwable ignored) { }
+        } catch (Throwable ignored) {}
     }
 
-    /** Fast local-only query used before provider/network catalog work. */
     static List<Emote> autocompleteNative(String prefix, int limit) {
         try {
-            if (!Settings.EMOTES_THIRD_PARTY.get() || !Settings.EMOTES_AUTOCOMPLETE.get() ||
-                    prefix == null || prefix.length() < 2 || limit <= 0) {
+            if (!Settings.EMOTES_THIRD_PARTY.get() || !Settings.EMOTES_AUTOCOMPLETE.get()
+                    || prefix == null || prefix.length() < 2 || limit <= 0) {
                 return Collections.emptyList();
             }
             String query = prefix.toLowerCase(Locale.ROOT);
             LinkedHashMap<String, Emote> starts = new LinkedHashMap<>();
             LinkedHashMap<String, Emote> contains = new LinkedHashMap<>();
             for (Emote emote : NativeEmoteCatalog.snapshot()) {
-                if (emote == null || emote.name == null) continue;
-                String name = emote.name.toLowerCase(Locale.ROOT);
-                if (name.startsWith(query)) starts.putIfAbsent(name, emote);
-                else if (name.contains(query)) contains.putIfAbsent(name, emote);
+                if (emote == null || emote.lowerName.isEmpty()) continue;
+                if (emote.lowerName.startsWith(query)) starts.putIfAbsent(emote.lowerName, emote);
+                else if (emote.lowerName.contains(query)) contains.putIfAbsent(emote.lowerName, emote);
             }
 
             ArrayList<Emote> result = new ArrayList<>(Math.min(limit, starts.size() + contains.size()));
@@ -182,34 +183,32 @@ public final class EmoteSupport {
 
     static List<Emote> autocomplete(String channelId, String prefix, int limit) {
         try {
-            if (!Settings.EMOTES_THIRD_PARTY.get() || !Settings.EMOTES_AUTOCOMPLETE.get() ||
-                    prefix == null || prefix.length() < 2 || limit <= 0) return Collections.emptyList();
+            if (!Settings.EMOTES_THIRD_PARTY.get() || !Settings.EMOTES_AUTOCOMPLETE.get()
+                    || prefix == null || prefix.length() < 2 || limit <= 0) return Collections.emptyList();
             String query = prefix.toLowerCase(Locale.ROOT);
             LinkedHashMap<String, Emote> starts = new LinkedHashMap<>();
             LinkedHashMap<String, Emote> contains = new LinkedHashMap<>();
-            // Seed suggestions from the bundled Twitch-native catalog before the network catalogs.
-            // Native entries are inserted first, so same-name collisions resolve to Twitch's emote.
             for (Emote emote : NativeEmoteCatalog.snapshot()) {
-                if (emote == null || emote.name == null) continue;
-                String name = emote.name.toLowerCase(Locale.ROOT);
-                if (name.startsWith(query)) starts.putIfAbsent(name, emote);
-                else if (name.contains(query)) contains.putIfAbsent(name, emote);
+                if (emote == null || emote.lowerName.isEmpty()) continue;
+                if (emote.lowerName.startsWith(query)) starts.putIfAbsent(emote.lowerName, emote);
+                else if (emote.lowerName.contains(query)) contains.putIfAbsent(emote.lowerName, emote);
             }
-            String[] scopes = channelId == null ? new String[] {null} : new String[] {channelId, null};
+            String[] scopes = channelId == null ? new String[]{null} : new String[]{channelId, null};
             for (int provider = 0; provider < 3; provider++) {
                 if (!providerEnabled(provider)) continue;
                 for (String scope : scopes) {
                     for (Emote emote : CATALOG.providerSnapshot(scope, provider).values()) {
-                        if (emote == null || emote.name == null) continue;
-                        String name = emote.name.toLowerCase(Locale.ROOT);
-                        String key = name;
-                        if (name.startsWith(query)) starts.putIfAbsent(key, emote);
-                        else if (name.contains(query)) contains.putIfAbsent(key, emote);
+                        if (emote == null || emote.lowerName.isEmpty()) continue;
+                        if (emote.lowerName.startsWith(query)) starts.putIfAbsent(emote.lowerName, emote);
+                        else if (emote.lowerName.contains(query)) contains.putIfAbsent(emote.lowerName, emote);
                     }
                 }
             }
             ArrayList<Emote> result = new ArrayList<>(Math.min(limit, starts.size() + contains.size()));
-            result.addAll(starts.values().stream().limit(limit).collect(java.util.stream.Collectors.toList()));
+            for (Emote emote : starts.values()) {
+                if (result.size() >= limit) break;
+                result.add(emote);
+            }
             for (Emote emote : contains.values()) {
                 if (result.size() >= limit) break;
                 result.add(emote);
@@ -221,13 +220,11 @@ public final class EmoteSupport {
             return Collections.emptyList();
         }
     }
+
     static String autocompleteDiagnostics(String channelId, String prefix) {
         return CATALOG.diagnostics(channelId, prefix);
     }
 
-    /**
-     * Returns all enabled third-party emotes for Twitch's native autocomplete backing map.
-     */
     static List<Emote> autocompleteAll() {
         try {
             if (!Settings.EMOTES_THIRD_PARTY.get() || !Settings.EMOTES_AUTOCOMPLETE.get()) {
@@ -241,8 +238,8 @@ public final class EmoteSupport {
             for (int provider = 0; provider < 3; provider++) {
                 if (!providerEnabled(provider)) continue;
                 String[] scopes = channelId == null
-                        ? new String[] {null}
-                        : new String[] {channelId, null};
+                        ? new String[]{null}
+                        : new String[]{channelId, null};
                 for (String scope : scopes) {
                     for (Emote emote : CATALOG.providerSnapshot(scope, provider).values()) {
                         merged.putIfAbsent(emote.name, emote);
@@ -257,8 +254,8 @@ public final class EmoteSupport {
 
     static void preview(TextView textView, Emote emote) {
         try {
-            if (textView == null || emote == null || !textView.isAttachedToWindow() || !textView.isShown() ||
-                    !Settings.EMOTES_THIRD_PARTY.get() || !Settings.EMOTES_TAP_PREVIEW.get()) return;
+            if (textView == null || emote == null || !textView.isAttachedToWindow() || !textView.isShown()
+                    || !Settings.EMOTES_THIRD_PARTY.get() || !Settings.EMOTES_TAP_PREVIEW.get()) return;
             BoundMessage message;
             synchronized (LOCK) { message = BOUND_MESSAGES.get(textView); }
             if (message == null) return;
@@ -266,7 +263,7 @@ public final class EmoteSupport {
             if (current == null || !current.url.equals(emote.url)) return;
             android.graphics.drawable.Drawable drawable = IMAGES.createDrawable(textView.getResources(), current);
             if (drawable != null) PREVIEW.open(textView, current, drawable);
-        } catch (Throwable ignored) { }
+        } catch (Throwable ignored) {}
     }
 
     static boolean pickerEnabled() {
@@ -285,16 +282,13 @@ public final class EmoteSupport {
         try {
             android.content.Context context = Utils.getContext();
             if (context != null && pickerEnabled()) CATALOG.ensureLoaded(context, channelId);
-        } catch (Throwable ignored) { }
+        } catch (Throwable ignored) {}
     }
 
     static String currentChannelName(String channelId) {
         return channelId != null && channelId.equals(lastRoomId) ? lastRoomName : null;
     }
-    // Patched in right after Twitch's own setText in the chat-row binder (udc.D). That binder runs
-    // inside RecyclerView.onBindViewHolder and has no try/catch, so anything thrown here unwinds
-    // through the adapter and takes out the whole chat list and message input. This hook must never
-    // throw. (#196)
+
     public static void bind(TextView textView) {
         bind(null, textView, null);
     }
@@ -308,13 +302,10 @@ public final class EmoteSupport {
     }
 
     public static void bind(Object messageModel, TextView textView, String sourceChannelId) {
-        if (textView == null) {
-            return;
-        }
+        if (textView == null) return;
         try {
             EmoteAutocomplete.attachFromChatRow(textView);
-        } catch (Throwable ignored) {
-        }
+        } catch (Throwable ignored) {}
         try {
             bindInternal(messageModel, textView, sourceChannelId);
         } catch (Throwable ignored) {
@@ -327,8 +318,7 @@ public final class EmoteSupport {
         while (c instanceof android.content.ContextWrapper && !(c instanceof android.app.Activity)) {
             c = ((android.content.ContextWrapper) c).getBaseContext();
         }
-        if (!(c instanceof android.app.Activity)) return false;
-        android.app.Activity a = (android.app.Activity) c;
+        if (!(c instanceof android.app.Activity a)) return false;
         return a.isFinishing() || a.isDestroyed() || a.isChangingConfigurations();
     }
 
@@ -339,8 +329,7 @@ public final class EmoteSupport {
             }
             MentionSupport.forget(textView);
             textView.removeOnAttachStateChangeListener(VIEW_LIFECYCLE);
-        } catch (Throwable ignored) {
-        }
+        } catch (Throwable ignored) {}
     }
 
     private static void bindInternal(Object messageModel, TextView textView, String sourceChannelId) {
@@ -358,8 +347,6 @@ public final class EmoteSupport {
         }
         String channelId = normalizeChannelId(sourceChannelId);
         if (channelId == null) {
-            // Normal non-shared-chat rows can omit sourceChannelId. Twitch 29.9.1 presents one active
-            // live-chat room, so use the latest connection key only for that missing-field case.
             channelId = lastRoomId;
         }
 
@@ -380,10 +367,7 @@ public final class EmoteSupport {
         try {
             String timestamp = extractTimestamp(messageModel);
             if (timestamp == null || timestamp.isEmpty()) return original;
-            String plain = original.toString();
-            if (plain.matches("^\\s*\\[?\\d{1,2}:\\d{2}(?:[:.]\\d{2})?(?:\\s?[APap][Mm])?\\]?\\s+.*$")) {
-                return original;
-            }
+            if (hasExistingTimestamp(original)) return original;
             SpannableStringBuilder result = new SpannableStringBuilder();
             result.append(timestamp);
             result.append("  ");
@@ -394,24 +378,57 @@ public final class EmoteSupport {
         }
     }
 
+    private static boolean hasExistingTimestamp(CharSequence text) {
+        int len = text.length();
+        int i = 0;
+        while (i < len && Character.isWhitespace(text.charAt(i))) i++;
+        if (i >= len) return false;
+        char first = text.charAt(i);
+        if (first != '[' && (first < '0' || first > '9')) return false;
+        return EXISTING_TIMESTAMP_PATTERN.matcher(text).matches();
+    }
+
     private static String extractTimestamp(Object model) {
         if (model == null) return null;
-        String[] names = {"getTimestamp", "timestamp", "getCreatedAt", "createdAt", "getSentAt", "sentAt", "getTime", "time"};
-        for (String name : names) {
+        Class<?> type = model.getClass();
+        Object accessor = TIMESTAMP_ACCESSORS.get(type);
+        if (accessor instanceof Method m) {
+            try { return formatTimestampValue(m.invoke(model)); } catch (Throwable ignored) { return null; }
+        }
+        if (accessor instanceof Field f) {
+            try { return formatTimestampValue(f.get(model)); } catch (Throwable ignored) { return null; }
+        }
+        if (accessor == TIMESTAMP_REGEX_FALLBACK) {
             try {
-                Method method = model.getClass().getMethod(name);
+                Matcher matcher = TIMESTAMP_TEXT.matcher(String.valueOf(model));
+                if (matcher.find()) return formatTimestampValue(matcher.group(1).trim());
+            } catch (Throwable ignored) {}
+            return null;
+        }
+
+        for (String name : TIMESTAMP_MEMBERS) {
+            try {
+                Method method = type.getMethod(name);
+                method.setAccessible(true);
                 String value = formatTimestampValue(method.invoke(model));
-                if (value != null) return value;
+                if (value != null) {
+                    TIMESTAMP_ACCESSORS.putIfAbsent(type, method);
+                    return value;
+                }
             } catch (Throwable ignored) {}
         }
-        for (String name : names) {
+        for (String name : TIMESTAMP_MEMBERS) {
             try {
-                Field field = model.getClass().getDeclaredField(name);
+                Field field = type.getDeclaredField(name);
                 field.setAccessible(true);
                 String value = formatTimestampValue(field.get(model));
-                if (value != null) return value;
+                if (value != null) {
+                    TIMESTAMP_ACCESSORS.putIfAbsent(type, field);
+                    return value;
+                }
             } catch (Throwable ignored) {}
         }
+        TIMESTAMP_ACCESSORS.putIfAbsent(type, TIMESTAMP_REGEX_FALLBACK);
         try {
             Matcher matcher = TIMESTAMP_TEXT.matcher(String.valueOf(model));
             if (matcher.find()) return formatTimestampValue(matcher.group(1).trim());
@@ -422,8 +439,8 @@ public final class EmoteSupport {
     private static String formatTimestampValue(Object value) {
         if (value == null) return null;
         long millis = -1L;
-        if (value instanceof Number) {
-            long raw = ((Number) value).longValue();
+        if (value instanceof Number num) {
+            long raw = num.longValue();
             millis = raw < 100000000000L ? raw * 1000L : raw;
         } else {
             String raw = String.valueOf(value).trim();
@@ -432,28 +449,24 @@ public final class EmoteSupport {
                 millis = number < 100000000000L ? number * 1000L : number;
             } catch (NumberFormatException ignored) {
                 try {
-                    java.time.Instant instant = java.time.Instant.parse(raw);
-                    millis = instant.toEpochMilli();
+                    millis = java.time.Instant.parse(raw).toEpochMilli();
                 } catch (Throwable parseIgnored) {}
             }
         }
         if (millis <= 0L) return null;
         try {
             String format = Settings.CHAT_TIMESTAMP_FORMAT.get();
-            String pattern = "h12".equalsIgnoreCase(format) ? "h:mm a" : "HH:mm";
-            return "[" + new SimpleDateFormat(pattern, Locale.getDefault()).format(new Date(millis)) + "]";
+            SimpleDateFormat sdf = "h12".equalsIgnoreCase(format) ? FMT_12.get() : FMT_24.get();
+            return "[" + sdf.format(new Date(millis)) + "]";
         } catch (Throwable ignored) {
             return null;
         }
     }
 
     private static void render(TextView textView, BoundMessage message) {
-        // Reached on the UI thread from bind and from posted refreshes; contain any failure so a bad
-        // emote/image can never crash Twitch or blank the row.
         try {
             renderInternal(textView, message);
-        } catch (Throwable ignored) {
-        }
+        } catch (Throwable ignored) {}
     }
 
     private static void renderInternal(TextView textView, BoundMessage message) {
@@ -529,10 +542,6 @@ public final class EmoteSupport {
                 hasTapPreview = true;
             }
 
-            // Chat text normally has a whitespace separator before each token. A zero-width
-            // emote must also consume that separator, otherwise it is shifted to the right
-            // instead of overlaying the previous emote. Make the immediately preceding
-            // separator zero-width as well, including for consecutive zero-width emotes.
             if (useZeroWidth && start > 0 && isSeparator(original.charAt(start - 1))) {
                 int separatorStart = start - 1;
                 while (separatorStart > 0 && isSeparator(original.charAt(separatorStart - 1))) {
@@ -551,8 +560,6 @@ public final class EmoteSupport {
                 ? Collections.emptySet()
                 : Collections.unmodifiableSet(pendingImages);
 
-        // Publish pendingImages before enqueueing work. A disk-cache decode can complete immediately on
-        // a worker, and its callback must already be able to find this row as a waiter.
         if (missingImages != null) {
             for (Emote emote : missingImages.values()) {
                 IMAGES.request(
@@ -589,27 +596,19 @@ public final class EmoteSupport {
     }
 
     private static boolean isSeparator(char value) {
-        return Character.isWhitespace(value) || (value >= '⁦' && value <= '⁩');
+        return Character.isWhitespace(value) || (value >= '\u2066' && value <= '\u2069');
     }
 
     private static String normalizeChannelId(String value) {
-        if (value == null) {
-            return null;
-        }
+        if (value == null) return null;
         String trimmed = value.trim();
-        if (trimmed.isEmpty() || trimmed.length() > 20) {
-            return null;
-        }
+        if (trimmed.isEmpty() || trimmed.length() > 20) return null;
         for (int index = 0; index < trimmed.length(); index++) {
-            if (!Character.isDigit(trimmed.charAt(index))) {
-                return null;
-            }
+            if (!Character.isDigit(trimmed.charAt(index))) return null;
         }
         return trimmed;
     }
 
-    // Invoked from the catalog/image executor threads. An uncaught throw here would be fatal to the
-    // whole app, so keep it contained.
     private static void refreshImage(String url) {
         try {
             EmoteAutocomplete.onImageLoaded(url);
@@ -621,8 +620,7 @@ public final class EmoteSupport {
                     scheduleRender(textView, message);
                 }
             }
-        } catch (Throwable ignored) {
-        }
+        } catch (Throwable ignored) {}
     }
 
     private static void refreshCatalog(String channelId) {
@@ -633,15 +631,12 @@ public final class EmoteSupport {
             for (Map.Entry<TextView, BoundMessage> entry : snapshot) {
                 TextView textView = entry.getKey();
                 BoundMessage message = entry.getValue();
-                if (textView == null || message == null) {
-                    continue;
-                }
+                if (textView == null || message == null) continue;
                 if (channelId == null || channelId.equals(message.channelId)) {
                     scheduleRender(textView, message);
                 }
             }
-        } catch (Throwable ignored) {
-        }
+        } catch (Throwable ignored) {}
     }
 
     private static List<Map.Entry<TextView, BoundMessage>> boundMessages() {
@@ -652,17 +647,13 @@ public final class EmoteSupport {
 
     private static void scheduleRender(TextView textView, BoundMessage message) {
         synchronized (LOCK) {
-            if (BOUND_MESSAGES.get(textView) != message || message.refreshPosted) {
-                return;
-            }
+            if (BOUND_MESSAGES.get(textView) != message || message.refreshPosted) return;
             message.refreshPosted = true;
         }
         boolean posted = textView.post(() -> {
             synchronized (LOCK) {
                 message.refreshPosted = false;
-                if (BOUND_MESSAGES.get(textView) != message) {
-                    return;
-                }
+                if (BOUND_MESSAGES.get(textView) != message) return;
             }
             render(textView, message);
         });
@@ -696,17 +687,11 @@ public final class EmoteSupport {
                 int baseline,
                 int bottom,
                 android.graphics.Paint paint
-        ) {
-            // Intentionally empty: the separator is removed from layout while the following
-            // zero-width emote is drawn at the previous content's exact endpoint.
-        }
+        ) {}
     }
 
     private static void stopAnimations(CharSequence text) {
-        if (!(text instanceof Spanned)) {
-            return;
-        }
-        Spanned spanned = (Spanned) text;
+        if (!(text instanceof Spanned spanned)) return;
         for (CenteredImageSpan span :
                 spanned.getSpans(0, spanned.length(), CenteredImageSpan.class)) {
             span.stop();
@@ -725,5 +710,3 @@ public final class EmoteSupport {
         }
     }
 }
-
-

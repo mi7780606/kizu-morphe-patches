@@ -43,13 +43,16 @@ final class EmoteCatalog {
     private final ProviderState globalBetterTtv = new ProviderState();
     private final ProviderState globalFfz = new ProviderState();
     private final ThreadPoolExecutor executor = new ThreadPoolExecutor(
-            6,
-            6,
-            0L,
-            TimeUnit.MILLISECONDS,
+            4,
+            4,
+            30L,
+            TimeUnit.SECONDS,
             new LinkedBlockingQueue<>(64),
             new DaemonThreadFactory()
     );
+    {
+        executor.allowCoreThreadTimeOut(true);
+    }
     private final Consumer<String> onUpdated;
 
     EmoteCatalog(Consumer<String> onUpdated) {
@@ -605,10 +608,10 @@ final class EmoteCatalog {
                 throw new IOException("HTTP " + status + " for " + url);
             }
             try (InputStream input = connection.getInputStream()) {
-                String body = new String(readLimited(input, MAX_RESPONSE_BYTES), StandardCharsets.UTF_8);
+                byte[] raw = readLimited(input, MAX_RESPONSE_BYTES);
+                String body = new String(raw, StandardCharsets.UTF_8);
                 Log.i(TAG, "HTTP provider request completed status=" + status + " elapsedMs=" +
-                        (System.currentTimeMillis() - startedAt) + " bytes=" +
-                        body.getBytes(StandardCharsets.UTF_8).length);
+                        (System.currentTimeMillis() - startedAt) + " bytes=" + raw.length);
                 return body;
             }
         } catch (IOException error) {

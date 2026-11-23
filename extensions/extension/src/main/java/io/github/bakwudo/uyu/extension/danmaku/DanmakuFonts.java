@@ -24,6 +24,7 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
+import java.util.concurrent.ConcurrentHashMap;
 
 import io.github.bakwudo.uyu.extension.Utils;
 
@@ -63,6 +64,8 @@ public final class DanmakuFonts {
 
     /** Typefaces by setting and weight. Settings change often while a slider is dragged. */
     private static final Map<String, Typeface> typefaces = new HashMap<>();
+    private static final Map<String, Boolean> weightAxisCache = new ConcurrentHashMap<>();
+    private static volatile List<Choice> systemChoicesCache;
 
     /**
      * @return A typeface for the font setting at the given weight (100 to 900). A font without
@@ -125,6 +128,15 @@ public final class DanmakuFonts {
      * table directory and the axes of its 'fvar' table.
      */
     static boolean hasWeightAxis(File file, int collectionIndex) {
+        String key = file.getAbsolutePath() + "#" + collectionIndex;
+        Boolean cached = weightAxisCache.get(key);
+        if (cached != null) return cached;
+        boolean result = detectWeightAxis(file, collectionIndex);
+        weightAxisCache.put(key, result);
+        return result;
+    }
+
+    private static boolean detectWeightAxis(File file, int collectionIndex) {
         try (RandomAccessFile font = new RandomAccessFile(file, "r")) {
             long fontOffset = 0;
             if (font.readInt() == 0x74746366 /* ttcf */) {
@@ -186,6 +198,9 @@ public final class DanmakuFonts {
     }
 
     private static List<Choice> systemFontChoices() {
+        List<Choice> cached = systemChoicesCache;
+        if (cached != null) return cached;
+
         // Setting value to label, in the order found.
         Map<String, String> japanese = new LinkedHashMap<>();
         Map<String, String> others = new LinkedHashMap<>();
@@ -224,7 +239,9 @@ public final class DanmakuFonts {
         List<Choice> choices = new ArrayList<>();
         addSorted(choices, japanese);
         addSorted(choices, others);
-        return choices;
+        List<Choice> result = Collections.unmodifiableList(choices);
+        systemChoicesCache = result;
+        return result;
     }
 
     private static void addSorted(List<Choice> choices, Map<String, String> fonts) {
@@ -277,6 +294,7 @@ public final class DanmakuFonts {
         synchronized (DanmakuFonts.class) {
             // A file imported again under the same name replaces the old one.
             typefaces.clear();
+            weightAxisCache.remove(target.getAbsolutePath() + "#0");
         }
         if (new Typeface.Builder(target).build() == null) {
             //noinspection ResultOfMethodCallIgnored

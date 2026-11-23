@@ -85,12 +85,11 @@ public final class ColorPreference extends Preference {
         layout.setOrientation(LinearLayout.VERTICAL);
         layout.setPadding(padding, padding, padding, 0);
 
-        EditText hex = new EditText(context);
+        EditText hex = TwitchUi.createPillInput(context, "#AARRGGBB");
         hex.setSingleLine(true);
         hex.setInputType(InputType.TYPE_CLASS_TEXT | InputType.TYPE_TEXT_FLAG_NO_SUGGESTIONS
                 | InputType.TYPE_TEXT_FLAG_CAP_CHARACTERS);
         hex.setFilters(new InputFilter[]{new InputFilter.LengthFilter(9)});
-        hex.setHint("#AARRGGBB");
         hex.setText(format(value));
 
         GridLayout presets = new GridLayout(context);
@@ -99,7 +98,7 @@ public final class ColorPreference extends Preference {
         int margin = SettingsUi.dp(context, 6);
         for (int rgb : PRESETS) {
             View swatch = new View(context);
-            swatch.setBackground(swatchDrawable(context, 0xFF000000 | rgb));
+            swatch.setBackground(TwitchUi.ripple(context, swatchDrawable(context, 0xFF000000 | rgb), size * 0.5f));
             swatch.setOnClickListener(v -> {
                 Integer current = parse(hex.getText().toString());
                 int alpha = (current == null ? value : current) & 0xFF000000;
@@ -116,6 +115,7 @@ public final class ColorPreference extends Preference {
         LinearLayout.LayoutParams presetsParams = new LinearLayout.LayoutParams(
                 ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT);
         presetsParams.gravity = Gravity.CENTER_HORIZONTAL;
+        presetsParams.bottomMargin = SettingsUi.dp(context, 12);
         layout.addView(presets, presetsParams);
         layout.addView(hex, new LinearLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));

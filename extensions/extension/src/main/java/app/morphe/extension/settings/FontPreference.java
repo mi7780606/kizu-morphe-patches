@@ -11,6 +11,7 @@ import android.widget.Toast;
 
 import java.util.List;
 
+import app.morphe.extension.KizuRuntime;
 import io.github.bakwudo.uyu.extension.Utils;
 import io.github.bakwudo.uyu.extension.danmaku.DanmakuFonts;
 
@@ -89,7 +90,7 @@ public final class FontPreference extends Preference {
         if (resultCode != android.app.Activity.RESULT_OK || uri == null) return;
 
         Context context = getContext().getApplicationContext();
-        new Thread(() -> {
+        KizuRuntime.ioExecutor().execute(() -> {
             String value = null;
             try {
                 value = DanmakuFonts.importFont(context, uri);
@@ -106,7 +107,7 @@ public final class FontPreference extends Preference {
                     setting.save(imported);
                 }
             });
-        }, "uyu-font-import").start();
+        });
     }
 
     private void setValue(String value) {

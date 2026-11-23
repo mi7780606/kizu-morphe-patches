@@ -4,11 +4,16 @@ import android.annotation.SuppressLint;
 import android.app.Activity;
 import android.content.Context;
 import android.content.ContextWrapper;
+import android.content.res.Resources;
 import android.util.Log;
+
+import java.util.concurrent.ConcurrentHashMap;
 
 @SuppressWarnings("unused")
 public final class Utils {
     private static final String TAG = "uyu";
+    private static final ConcurrentHashMap<String, Integer> RESOURCE_ID_CACHE =
+            new ConcurrentHashMap<>();
 
     @SuppressLint("StaticFieldLeak")
     private static volatile Context context;
@@ -32,13 +37,22 @@ public final class Utils {
 
     /**
      * Looks up one of Twitch's own resources by name. Resource ids change between Twitch
-     * versions, names usually do not.
+     * versions, names usually do not. Results are cached for the lifetime of the process.
      *
      * @return The resource id, or 0 if it does not exist.
      */
     @SuppressLint("DiscouragedApi")
     public static int getResourceId(Context context, String name, String type) {
-        return context.getResources().getIdentifier(name, type, context.getPackageName());
+        if (context == null || name == null || type == null) return 0;
+        String pkg = context.getPackageName();
+        String cacheKey = pkg + ":" + type + ":" + name;
+        Integer cached = RESOURCE_ID_CACHE.get(cacheKey);
+        if (cached != null) return cached;
+        Resources res = context.getResources();
+        if (res == null) return 0;
+        int id = res.getIdentifier(name, type, pkg);
+        RESOURCE_ID_CACHE.putIfAbsent(cacheKey, id);
+        return id;
     }
 
     /**

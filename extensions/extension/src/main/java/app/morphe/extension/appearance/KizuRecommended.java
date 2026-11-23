@@ -28,8 +28,8 @@ import org.json.JSONArray;
 import org.json.JSONObject;
 
 import java.io.ByteArrayOutputStream;
-import java.io.File;
 import java.io.InputStream;
+import java.lang.ref.WeakReference;
 import java.net.HttpURLConnection;
 import java.net.URL;
 import java.nio.charset.StandardCharsets;
@@ -37,21 +37,26 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.Locale;
 import java.util.UUID;
-import java.util.concurrent.ExecutorService;
-import java.util.concurrent.Executors;
 
+import app.morphe.extension.KizuRuntime;
+import app.morphe.extension.Utils;
+import app.morphe.extension.settings.SettingsUi;
+import app.morphe.extension.settings.TwitchUi;
 import io.github.bakwudo.uyu.extension.settings.KizuSettings;
+import io.github.bakwudo.uyu.extension.settings.Setting;
 
 /** フォロー中の「ライブ」を選んだとき、一番上に「あなたにおすすめのチャンネル」を出す */
 public final class KizuRecommended {
     private static final String TAG = "KizuRecommended";
     private static final String VIEW_TAG = "kizu_recommended";
+    private static final int TAG_ITEMS = 0x7F7E0001;
+    private static final int TAG_THEME = 0x7F7E0002;
+    private static final int TAG_BOUND = 0x7F7E0003;
     private static final int COUNT = 4;
     private static final long CACHE_MS = 5 * 60_000L;
     private static final String GQL_URL = "https://gql.twitch.tv/gql";
     private static final String CLIENT_ID = "kd1unb4b3q4t58fwlpcbzcbnm76a8fp";
 
-    // Twitch 31.3.1 (r530) TabletHomeRowChannelRecsQuery の recommendedStreams を必要な項目だけにしたもの
     private static final String QUERY =
             "query KizuRecommendedStreams($first: Int, $recRequestID: ID!, $recLocation: String!,"
             + " $recContext: RecommendationsContext!) {"
@@ -61,8 +66,12 @@ public final class KizuRecommended {
             + " broadcaster { login displayName profileImageURL(width: 70) } } } } }";
 
     private static final Handler MAIN = new Handler(Looper.getMainLooper());
-    private static final ExecutorService IO = Executors.newFixedThreadPool(3);
-    private static final LruCache<String, Bitmap> IMAGES = new LruCache<>(40);
+    private static final LruCache<String, Bitmap> IMAGES = new LruCache<>(4 * 1024 * 1024) {
+        @Override
+        protected int sizeOf(String key, Bitmap value) {
+            return Math.max(1, value.getByteCount());
+        }
+    };
 
     private static final class Item {
         String login, name, title, game, preview, avatar;
@@ -72,73 +81,182 @@ public final class KizuRecommended {
     private static List<Item> cache;
     private static long cachedAt;
     private static boolean loading;
+    private static WeakReference<View> liveTabRef = new WeakReference<>(null);
+    private static WeakReference<View> boundRecyclerRef = new WeakReference<>(null);
+    private static WeakReference<View> boundDelegateRef = new WeakReference<>(null);
+    private static boolean prefListenerRegistered;
+    private static final SharedPreferences.OnSharedPreferenceChangeListener PREF_LISTENER =
+            (prefs, key) -> {
+                if (key == null || KizuSettings.RECOMMENDED_CHANNELS.key.equals(key)) {
+                    MAIN.post(() -> {
+                        View del = boundDelegateRef.get();
+                        View rec = boundRecyclerRef.get();
+                        if (del != null && rec != null && rec.isAttachedToWindow()) {
+                            update(del, rec);
+                        }
+                    });
+                }
+            };
 
     private KizuRecommended() {}
 
-    /** KizuUiTweaks の画面スキャンから呼ぶ */
+    /**
+     * Binds directly to Twitch's Following RecyclerView created in HidePromotionsPatch.onViewCreated.
+     * Avoids any DecorView OnGlobalLayoutListener polling.
+     */
+    public static void bindFollowingRoot(View delegateRoot, View followingRecycler) {
+        if (delegateRoot == null || followingRecycler == null) return;
+        ensurePrefListener();
+        boundDelegateRef = new WeakReference<>(delegateRoot);
+        boundRecyclerRef = new WeakReference<>(followingRecycler);
+        if (!Boolean.TRUE.equals(followingRecycler.getTag(TAG_BOUND))) {
+            followingRecycler.setTag(TAG_BOUND, Boolean.TRUE);
+            WeakReference<View> delRef = new WeakReference<>(delegateRoot);
+            WeakReference<View> recRef = new WeakReference<>(followingRecycler);
+            final boolean[] updatePosted = {false};
+            Runnable trigger = () -> {
+                updatePosted[0] = false;
+                View del = delRef.get();
+                View rec = recRef.get();
+                if (del != null && rec != null && rec.isAttachedToWindow()) {
+                    update(del, rec);
+                }
+            };
+            View.OnLayoutChangeListener listener = (v, l, t, r, b, ol, ot, or, ob) -> {
+                if (!updatePosted[0]) {
+                    updatePosted[0] = true;
+                    v.post(trigger);
+                }
+            };
+            followingRecycler.addOnLayoutChangeListener(listener);
+            View tabStrip = findTabStrip(delegateRoot);
+            if (tabStrip != null) tabStrip.addOnLayoutChangeListener(listener);
+            followingRecycler.post(trigger);
+        } else {
+            update(delegateRoot, followingRecycler);
+        }
+    }
+
+    private static void ensurePrefListener() {
+        if (prefListenerRegistered) return;
+        prefListenerRegistered = true;
+        Setting.addChangeListener(PREF_LISTENER);
+    }
+
+    /** Compatibility entry point if called directly. */
     static void update(View root) {
+        if (root == null) return;
+        int listId = Utils.getResourceId(root.getContext(), "following_list_recycler_view", "id");
+        View list = listId != 0 ? root.findViewById(listId) : null;
+        if (list != null) update(root, list);
+    }
+
+    private static void update(View delegateRoot, View list) {
         boolean on;
         try { on = KizuSettings.RECOMMENDED_CHANNELS.get(); } catch (Throwable t) { on = true; }
-        Context c = root.getContext();
-        int listId = c.getResources().getIdentifier("following_list_recycler_view", "id", c.getPackageName());
-        int headerId = c.getResources().getIdentifier("header_view_container", "id", c.getPackageName());
-        if (listId == 0 || headerId == 0) return;
-        View list = root.findViewById(listId);
-        if (list == null) return;
-        View hv = root.findViewById(headerId);
-        if (!(hv instanceof FrameLayout)) return;
-        FrameLayout header = (FrameLayout) hv;
+        Context c = list.getContext();
+        int headerId = Utils.getResourceId(c, "header_view_container", "id");
+        if (headerId == 0) return;
+
+        View hv = delegateRoot.findViewById(headerId);
+        if (hv == null) {
+            View top = delegateRoot.getRootView();
+            if (top != null) hv = top.findViewById(headerId);
+        }
+        if (!(hv instanceof FrameLayout header)) return;
         View existing = header.findViewWithTag(VIEW_TAG);
 
-        boolean show = on && list.isShown() && liveSelected(root);
+        boolean show = on && list.isShown() && liveSelected(delegateRoot);
         if (!show) {
-            if (existing != null) existing.setVisibility(View.GONE);
+            if (existing != null && existing.getVisibility() != View.GONE) {
+                existing.setVisibility(View.GONE);
+            }
             return;
         }
         if (existing == null) {
             existing = buildSection(c);
             header.addView(existing, new FrameLayout.LayoutParams(-1, -2));
         }
-        existing.setVisibility(View.VISIBLE);
+        if (existing.getVisibility() != View.VISIBLE) existing.setVisibility(View.VISIBLE);
         if (header.getVisibility() != View.VISIBLE) header.setVisibility(View.VISIBLE);
         load(c, (LinearLayout) existing);
     }
 
+    private static View findTabStrip(View delegateRoot) {
+        Context c = delegateRoot.getContext();
+        View top = delegateRoot.getRootView();
+        int id1 = Utils.getResourceId(c, "tab_layout", "id");
+        if (id1 != 0) {
+            View v = delegateRoot.findViewById(id1);
+            if (v == null && top != null) v = top.findViewById(id1);
+            if (v != null) return v;
+        }
+        int id2 = Utils.getResourceId(c, "tab_layout_no_tab_width", "id");
+        if (id2 != 0) {
+            View v = delegateRoot.findViewById(id2);
+            if (v == null && top != null) v = top.findViewById(id2);
+            if (v != null) return v;
+        }
+        return null;
+    }
+
     /** 画面上部の「ライブ」が選ばれているか。見つからなければ表示する */
-    private static boolean liveSelected(View root) {
-        List<View> found = new ArrayList<>();
-        findLabel(root, found, 0);
+    private static boolean liveSelected(View delegateRoot) {
+        View cachedTab = liveTabRef.get();
+        if (cachedTab != null && cachedTab.isAttachedToWindow() && cachedTab.isShown()) {
+            return isSelectedInAncestors(cachedTab);
+        }
+        View tabStrip = findTabStrip(delegateRoot);
+        View searchRoot = tabStrip != null ? tabStrip : delegateRoot.getRootView();
+        if (searchRoot == null) return true;
+
+        List<View> found = new ArrayList<>(2);
+        int maxY = tabStrip != null ? Integer.MAX_VALUE
+                : searchRoot.getResources().getDisplayMetrics().heightPixels / 3;
+        findLabel(searchRoot, found, 0, maxY);
         if (found.isEmpty()) return true;
+        liveTabRef = new WeakReference<>(found.get(0));
         for (View v : found) {
-            for (View cur = v; cur != null && cur != root; ) {
-                if (cur.isSelected() || cur.isActivated()
-                        || (cur instanceof Checkable && ((Checkable) cur).isChecked())) return true;
-                Object p = cur.getParent();
-                cur = p instanceof View ? (View) p : null;
-                if (cur != null && cur.getParent() == null) break;
+            if (isSelectedInAncestors(v)) {
+                liveTabRef = new WeakReference<>(v);
+                return true;
             }
         }
         return false;
     }
 
-    private static void findLabel(View v, List<View> out, int depth) {
-        if (depth > 30 || v.getVisibility() != View.VISIBLE) return;
-        if (v instanceof TextView) {
-            CharSequence t = ((TextView) v).getText();
+    private static boolean isSelectedInAncestors(View v) {
+        for (View cur = v; cur != null; ) {
+            if (cur.isSelected() || cur.isActivated()
+                    || (cur instanceof Checkable && ((Checkable) cur).isChecked())) return true;
+            Object p = cur.getParent();
+            cur = p instanceof View ? (View) p : null;
+        }
+        return false;
+    }
+
+    private static void findLabel(View v, List<View> out, int depth, int maxY) {
+        if (depth > 16 || v.getVisibility() != View.VISIBLE) return;
+        if (v instanceof TextView tv) {
+            CharSequence t = tv.getText();
             if (t != null) {
                 String s = t.toString().trim();
                 if (s.equals("ライブ") || s.equalsIgnoreCase("live")) {
-                    int[] loc = new int[2];
-                    v.getLocationOnScreen(loc);
-                    // 画面の上の方（タブ・フィルター）にあるものだけ
-                    if (loc[1] < v.getResources().getDisplayMetrics().heightPixels / 3) out.add(v);
+                    if (maxY == Integer.MAX_VALUE) {
+                        out.add(v);
+                    } else {
+                        int[] loc = new int[2];
+                        v.getLocationOnScreen(loc);
+                        if (loc[1] < maxY) out.add(v);
+                    }
                 }
             }
             return;
         }
-        if (v instanceof ViewGroup) {
-            ViewGroup g = (ViewGroup) v;
-            for (int i = 0; i < g.getChildCount(); i++) findLabel(g.getChildAt(i), out, depth + 1);
+        if (v instanceof ViewGroup g) {
+            for (int i = 0; i < g.getChildCount(); i++) {
+                findLabel(g.getChildAt(i), out, depth + 1, maxY);
+            }
         }
     }
 
@@ -147,42 +265,50 @@ public final class KizuRecommended {
         LinearLayout box = new LinearLayout(c);
         box.setTag(VIEW_TAG);
         box.setOrientation(LinearLayout.VERTICAL);
-        box.setPadding(dp(d, 16), dp(d, 12), dp(d, 16), dp(d, 4));
+        box.setPadding(0, dp(d, 10), 0, dp(d, 4));
         TextView title = new TextView(c);
         title.setText("あなたにおすすめのチャンネル");
-        title.setTextColor(0xFFEFEFF1);
+        title.setTextColor(SettingsUi.primaryTextColor(c));
         title.setTypeface(Typeface.DEFAULT_BOLD);
-        title.setTextSize(TypedValue.COMPLEX_UNIT_SP, 18);
-        title.setPadding(0, 0, 0, dp(d, 8));
+        title.setTextSize(TypedValue.COMPLEX_UNIT_SP, 17);
+        title.setPadding(dp(d, 16), 0, dp(d, 16), dp(d, 6));
         box.addView(title);
         return box;
     }
 
     private static void load(Context c, LinearLayout box) {
+        boolean dark = SettingsUi.isDark(c);
         long now = System.currentTimeMillis();
         if (cache != null && now - cachedAt < CACHE_MS) {
-            if (box.getTag(0x7f7e0001) != cache) fill(box, cache);
+            boolean sameItems = box.getTag(TAG_ITEMS) == cache;
+            boolean sameTheme = Boolean.valueOf(dark).equals(box.getTag(TAG_THEME));
+            if (!sameItems || !sameTheme) fill(box, cache, dark);
             return;
         }
         if (loading) return;
         loading = true;
         final Context app = c.getApplicationContext();
-        IO.execute(() -> {
+        KizuRuntime.ioExecutor().execute(() -> {
             List<Item> items = fetch(app);
             MAIN.post(() -> {
                 loading = false;
                 if (items == null) return;
                 cache = items;
                 cachedAt = System.currentTimeMillis();
-                fill(box, items);
+                fill(box, items, SettingsUi.isDark(box.getContext()));
             });
         });
     }
 
-    private static void fill(LinearLayout box, List<Item> items) {
-        box.setTag(0x7f7e0001, items);
+    private static void fill(LinearLayout box, List<Item> items, boolean dark) {
+        box.setTag(TAG_ITEMS, items);
+        box.setTag(TAG_THEME, dark);
+        Context c = box.getContext();
+        if (box.getChildCount() > 0 && box.getChildAt(0) instanceof TextView title) {
+            title.setTextColor(SettingsUi.primaryTextColor(c));
+        }
         while (box.getChildCount() > 1) box.removeViewAt(1);
-        for (Item it : items) box.addView(row(box.getContext(), it));
+        for (Item it : items) box.addView(row(c, it));
         if (items.isEmpty()) box.setVisibility(View.GONE);
     }
 
@@ -190,46 +316,63 @@ public final class KizuRecommended {
         float d = c.getResources().getDisplayMetrics().density;
         LinearLayout row = new LinearLayout(c);
         row.setOrientation(LinearLayout.HORIZONTAL);
-        row.setPadding(0, dp(d, 6), 0, dp(d, 6));
+        row.setGravity(Gravity.CENTER_VERTICAL);
+        row.setPadding(dp(d, 16), dp(d, 7), dp(d, 16), dp(d, 7));
+        row.setBackground(TwitchUi.selectableBackground(c));
         row.setClickable(true);
+        row.setFocusable(true);
         row.setOnClickListener(v -> open(v.getContext(), it.login));
 
+        int thumbBgColor = SettingsUi.alternateBackgroundColor(c);
         FrameLayout thumbBox = new FrameLayout(c);
+        thumbBox.setBackground(TwitchUi.roundedRect(thumbBgColor, 6f * d, 0, 0));
+        thumbBox.setClipToOutline(true);
+
         ImageView thumb = new ImageView(c);
         thumb.setScaleType(ImageView.ScaleType.CENTER_CROP);
-        thumb.setBackgroundColor(0xFF26262C);
         thumbBox.addView(thumb, new FrameLayout.LayoutParams(-1, -1));
+
         TextView live = badge(c, d, "ライブ", 0xFFEB0400);
         FrameLayout.LayoutParams lp1 = new FrameLayout.LayoutParams(-2, -2, Gravity.TOP | Gravity.LEFT);
-        lp1.setMargins(dp(d, 4), dp(d, 4), 0, 0);
+        lp1.setMargins(dp(d, 5), dp(d, 5), 0, 0);
         thumbBox.addView(live, lp1);
-        TextView viewers = badge(c, d, formatViewers(it.viewers), 0xCC000000);
+
+        TextView viewers = badge(c, d, formatViewers(it.viewers), 0xCC0E0E10);
         FrameLayout.LayoutParams lp2 = new FrameLayout.LayoutParams(-2, -2, Gravity.BOTTOM | Gravity.LEFT);
-        lp2.setMargins(dp(d, 4), 0, 0, dp(d, 4));
+        lp2.setMargins(dp(d, 5), 0, 0, dp(d, 5));
         thumbBox.addView(viewers, lp2);
+
         row.addView(thumbBox, new LinearLayout.LayoutParams(dp(d, 144), dp(d, 81)));
         image(it.preview, thumb);
 
         LinearLayout info = new LinearLayout(c);
         info.setOrientation(LinearLayout.VERTICAL);
-        info.setPadding(dp(d, 10), 0, 0, 0);
+        info.setPadding(dp(d, 12), 0, 0, 0);
+
         LinearLayout nameRow = new LinearLayout(c);
         nameRow.setGravity(Gravity.CENTER_VERTICAL);
         ImageView avatar = new ImageView(c);
         avatar.setClipToOutline(true);
         GradientDrawable circle = new GradientDrawable();
         circle.setShape(GradientDrawable.OVAL);
-        circle.setColor(0xFF26262C);
+        circle.setColor(thumbBgColor);
         avatar.setBackground(circle);
         nameRow.addView(avatar, new LinearLayout.LayoutParams(dp(d, 20), dp(d, 20)));
         image(it.avatar, avatar);
-        TextView name = text(c, it.name, 14, 0xFFEFEFF1, true);
-        name.setPadding(dp(d, 6), 0, 0, 0);
+
+        TextView name = text(c, it.name, 14.5f, SettingsUi.primaryTextColor(c), true);
+        name.setPadding(dp(d, 7), 0, 0, 0);
         nameRow.addView(name);
         info.addView(nameRow);
-        info.addView(text(c, it.title, 13, 0xFFADADB8, false));
-        info.addView(text(c, it.game, 13, 0xFFADADB8, false));
-        row.addView(info, new LinearLayout.LayoutParams(0, -2, 1));
+
+        TextView titleTv = text(c, it.title, 13f, SettingsUi.secondaryTextColor(c), false);
+        titleTv.setPadding(0, dp(d, 3), 0, dp(d, 1));
+        info.addView(titleTv);
+
+        if (it.game != null && !it.game.isEmpty()) {
+            info.addView(text(c, it.game, 12.5f, SettingsUi.secondaryTextColor(c), false));
+        }
+        row.addView(info, new LinearLayout.LayoutParams(0, -2, 1f));
         return row;
     }
 
@@ -237,17 +380,14 @@ public final class KizuRecommended {
         TextView t = new TextView(c);
         t.setText(s);
         t.setTextColor(0xFFFFFFFF);
-        t.setTextSize(TypedValue.COMPLEX_UNIT_SP, 11);
+        t.setTextSize(TypedValue.COMPLEX_UNIT_SP, 10.5f);
         t.setTypeface(Typeface.DEFAULT_BOLD);
-        t.setPadding(dp(d, 4), dp(d, 1), dp(d, 4), dp(d, 1));
-        GradientDrawable bg = new GradientDrawable();
-        bg.setColor(color);
-        bg.setCornerRadius(3 * d);
-        t.setBackground(bg);
+        t.setPadding(dp(d, 5), dp(d, 1), dp(d, 5), dp(d, 1));
+        t.setBackground(TwitchUi.roundedRect(color, 4f * d, 0, 0));
         return t;
     }
 
-    private static TextView text(Context c, String s, int sp, int color, boolean bold) {
+    private static TextView text(Context c, String s, float sp, int color, boolean bold) {
         TextView t = new TextView(c);
         t.setText(s == null ? "" : s);
         t.setTextColor(color);
@@ -280,7 +420,8 @@ public final class KizuRecommended {
         Bitmap b = IMAGES.get(url);
         if (b != null) { into.setImageBitmap(b); return; }
         into.setTag(url);
-        IO.execute(() -> {
+        WeakReference<ImageView> targetRef = new WeakReference<>(into);
+        KizuRuntime.ioExecutor().execute(() -> {
             try {
                 HttpURLConnection con = (HttpURLConnection) new URL(url).openConnection();
                 con.setConnectTimeout(7000);
@@ -289,18 +430,22 @@ public final class KizuRecommended {
                     Bitmap bmp = BitmapFactory.decodeStream(in);
                     if (bmp == null) return;
                     IMAGES.put(url, bmp);
-                    MAIN.post(() -> { if (url.equals(into.getTag())) into.setImageBitmap(bmp); });
+                    MAIN.post(() -> {
+                        ImageView target = targetRef.get();
+                        if (target != null && url.equals(target.getTag())) {
+                            target.setImageBitmap(bmp);
+                        }
+                    });
                 } finally {
                     con.disconnect();
                 }
-            } catch (Throwable ignored) {
-            }
+            } catch (Throwable ignored) {}
         });
     }
 
     private static List<Item> fetch(Context c) {
         try {
-            String token = readAuthToken(c);
+            String token = KizuRuntime.readAuthToken(c);
             JSONObject vars = new JSONObject()
                     .put("first", COUNT)
                     .put("recRequestID", UUID.randomUUID().toString())
@@ -344,23 +489,6 @@ public final class KizuRecommended {
         }
     }
 
-    private static String readAuthToken(Context context) {
-        File dir = new File(context.getApplicationInfo().dataDir, "shared_prefs");
-        File[] files = dir.listFiles();
-        if (files == null) return "";
-        for (File f : files) {
-            if (f == null || !f.getName().endsWith(".xml")) continue;
-            String name = f.getName().substring(0, f.getName().length() - 4);
-            try {
-                SharedPreferences p = context.getSharedPreferences(name, Context.MODE_PRIVATE);
-                String t = p.getString("authToken_v2", null);
-                if (t != null && !t.trim().isEmpty()) return t.trim();
-            } catch (Throwable ignored) {
-            }
-        }
-        return "";
-    }
-
     private static JSONObject post(String token, String body) {
         HttpURLConnection c = null;
         try {
@@ -397,11 +525,10 @@ public final class KizuRecommended {
 
     private static String deviceId;
 
-    /** おすすめの取得に必要な端末ID（このアプリ用に1回作って使い回す） */
     private static String deviceId() {
         if (deviceId != null) return deviceId;
         try {
-            Context c = app.morphe.extension.Utils.getContext();
+            Context c = Utils.getContext();
             SharedPreferences p = c.getSharedPreferences("uyu_settings", Context.MODE_PRIVATE);
             String id = p.getString("kizu_device_id", null);
             if (id == null) {

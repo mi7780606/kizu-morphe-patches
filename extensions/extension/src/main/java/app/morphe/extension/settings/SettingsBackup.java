@@ -1,12 +1,13 @@
 package app.morphe.extension.settings;
 
 import android.app.Activity;
-import android.app.AlertDialog;
 import android.app.Fragment;
 import android.content.Context;
 import android.content.Intent;
 import android.content.SharedPreferences;
 import android.net.Uri;
+import android.util.TypedValue;
+import android.widget.TextView;
 import android.widget.Toast;
 
 import org.json.JSONArray;
@@ -149,12 +150,19 @@ public final class SettingsBackup {
             return;
         }
         final JSONObject finalValues = values;
-        new AlertDialog.Builder(activity)
-                .setTitle("設定をインポート")
-                .setMessage(values.length() + "件の設定を読み込みます。今の設定は上書きされます。")
-                .setPositiveButton("インポート", (d, w) -> apply(activity, finalValues))
-                .setNegativeButton(android.R.string.cancel, null)
-                .show();
+        TextView msg = new TextView(activity);
+        msg.setText(values.length() + "件の設定を読み込みます。今の設定は上書きされます。");
+        msg.setTextColor(SettingsUi.secondaryTextColor(activity));
+        msg.setTextSize(TypedValue.COMPLEX_UNIT_SP, 14f);
+        TwitchUi.showThemedDialog(
+                activity,
+                "設定をインポート",
+                msg,
+                "インポート",
+                () -> apply(activity, finalValues),
+                null,
+                null,
+                activity.getString(android.R.string.cancel));
     }
 
     private static JSONObject readValues(Context context, Uri uri) throws Exception {

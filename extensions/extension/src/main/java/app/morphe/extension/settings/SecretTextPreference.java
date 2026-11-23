@@ -1,6 +1,5 @@
 package app.morphe.extension.settings;
 
-import android.app.AlertDialog;
 import android.content.Context;
 import android.preference.Preference;
 import android.text.InputType;
@@ -28,25 +27,25 @@ public final class SecretTextPreference extends Preference {
     @Override
     protected void onClick() {
         Context context = getContext();
-        int padding = SettingsUi.dp(context, 20);
-        EditText text = new EditText(context);
+        EditText text = TwitchUi.createPillInput(context, "API_KEY");
         text.setSingleLine(true);
         text.setInputType(InputType.TYPE_CLASS_TEXT | InputType.TYPE_TEXT_VARIATION_PASSWORD);
-        text.setHint("API_KEY");
         FrameLayout layout = new FrameLayout(context);
-        layout.setPadding(padding, padding / 2, padding, 0);
+        layout.setPadding(0, SettingsUi.dp(context, 4), 0, 0);
         layout.addView(text);
-        AlertDialog dialog = SettingsUi.dialog(context)
-                .setTitle(getTitle())
-                .setView(layout)
-                .setPositiveButton(android.R.string.ok, (d, which) -> {
+        CharSequence rawTitle = getTitle();
+        TwitchUi.showThemedDialog(
+                context,
+                rawTitle == null ? null : rawTitle.toString(),
+                layout,
+                context.getString(android.R.string.ok),
+                () -> {
                     String value = text.getText().toString().trim();
                     if (!value.isEmpty()) setValue(value);
-                })
-                .setNegativeButton(android.R.string.cancel, null)
-                .setNeutralButton("Clear", (d, which) -> setValue(""))
-                .create();
-        dialog.show();
+                },
+                "Clear",
+                () -> setValue(""),
+                context.getString(android.R.string.cancel));
     }
 
     private void setValue(String value) {

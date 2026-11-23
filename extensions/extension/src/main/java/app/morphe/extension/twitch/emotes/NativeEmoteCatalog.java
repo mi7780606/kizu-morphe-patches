@@ -269,6 +269,7 @@ final class NativeEmoteCatalog {
             "OptimizePrime|16\n" +
             "JKanStyle|15\n";
     private static final Map<String, Emote> EMOTES = new LinkedHashMap<>();
+    private static volatile List<Emote> cachedSnapshot = java.util.Collections.emptyList();
     private static final AtomicBoolean DB_LOAD_STARTED = new AtomicBoolean(false);
 
     static {
@@ -277,26 +278,40 @@ final class NativeEmoteCatalog {
             if (separator <= 0 || separator >= record.length() - 1) continue;
             String name = record.substring(0, separator);
             String id = record.substring(separator + 1);
-            put(name, id);
+            putLocked(name, id);
         }
+        rebuildSnapshotLocked();
     }
 
     private NativeEmoteCatalog() { }
 
-    private static synchronized void put(String name, String id) {
-        if (name == null || id == null || !name.matches("[A-Za-z0-9_]{2,}") || id.isEmpty()) return;
+    private static boolean isValidEmoteName(String name) {
+        if (name == null || name.length() < 2) return false;
+        for (int i = 0; i < name.length(); i++) {
+            char c = name.charAt(i);
+            boolean ok = (c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z')
+                    || (c >= '0' && c <= '9') || c == '_';
+            if (!ok) return false;
+        }
+        return true;
+    }
+
+    private static void putLocked(String name, String id) {
+        if (id == null || id.isEmpty() || !isValidEmoteName(name)) return;
         String key = name.toLowerCase(Locale.ROOT);
         EMOTES.put(key, new Emote(name,
                 "https://static-cdn.jtvnw.net/emoticons/v2/" + id + "/static/dark/2.0",
                 false, false, -1));
     }
 
+    private static void rebuildSnapshotLocked() {
+        cachedSnapshot = java.util.Collections.unmodifiableList(new ArrayList<>(EMOTES.values()));
+    }
+
     static void ensureLoaded(Context context) {
         if (context == null || !DB_LOAD_STARTED.compareAndSet(false, true)) return;
         Context app = context.getApplicationContext();
-        Thread worker = new Thread(() -> loadRecentNativeEmotes(app), "kizu-native-emote-db");
-        worker.setDaemon(true);
-        worker.start();
+        app.morphe.extension.KizuRuntime.ioExecutor().execute(() -> loadRecentNativeEmotes(app));
     }
 
     private static void loadRecentNativeEmotes(Context context) {
@@ -309,10 +324,13 @@ final class NativeEmoteCatalog {
         try (SQLiteDatabase database = SQLiteDatabase.openDatabase(
                 file.getAbsolutePath(), null, SQLiteDatabase.OPEN_READONLY);
              Cursor cursor = database.rawQuery("SELECT token, id FROM frequent_emotes", null)) {
-            while (cursor.moveToNext()) {
-                String name = cursor.getString(0);
-                String id = cursor.getString(1);
-                if (name != null && id != null) put(name, id);
+            synchronized (NativeEmoteCatalog.class) {
+                while (cursor.moveToNext()) {
+                    String name = cursor.getString(0);
+                    String id = cursor.getString(1);
+                    if (name != null && id != null) putLocked(name, id);
+                }
+                rebuildSnapshotLocked();
             }
             Log.i(TAG, "Merged Twitch emotes.db entries; native autocomplete catalog size=" + size());
         } catch (Throwable error) {
@@ -326,7 +344,7 @@ final class NativeEmoteCatalog {
         return EMOTES.size();
     }
 
-    static synchronized List<Emote> snapshot() {
-        return new java.util.ArrayList<>(EMOTES.values());
+    static List<Emote> snapshot() {
+        return cachedSnapshot;
     }
 }

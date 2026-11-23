@@ -1,26 +1,26 @@
 package app.morphe.extension.channelpoints;
 
 import android.content.Context;
-import android.content.SharedPreferences;
 
 import org.json.JSONArray;
 import org.json.JSONObject;
 
-import java.io.File;
+import java.io.ByteArrayOutputStream;
+import java.io.InputStream;
 import java.net.HttpURLConnection;
 import java.net.URL;
 import java.nio.charset.StandardCharsets;
+import java.util.concurrent.ScheduledFuture;
+import java.util.concurrent.TimeUnit;
 
+import app.morphe.extension.KizuRuntime;
 import app.morphe.extension.Utils;
 import app.morphe.extension.settings.Settings;
 
 /**
  * UI-independent Channel Points bonus claimant for Twitch 31.3.1.
- *
- * Uses Twitch's own GraphQL context and claim operations, based on the working PurpleTV ReVive
- * architecture and the exact GraphQL shapes found in the uploaded Twitch 31.3.1 APKM.
- *
- * This class intentionally does not touch CommunityPointsModel, its provider, or any Twitch UI.
+ * Uses the shared Kizu scheduler and cached auth-token lookup, only polling while active
+ * in the foreground on a channel.
  */
 public final class ChannelPoints {
     private static final String TAG = "kizu-cp";
@@ -33,7 +33,6 @@ public final class ChannelPoints {
     private static final String GQL_URL = "https://gql.twitch.tv/gql";
     private static final String GQL_CLIENT_ID = "kd1unb4b3q4t58fwlpcbzcbnm76a8fp";
 
-    // Exact Twitch 31.3.1 query structure recorded in reference/channel-points/twitch-31.3.1.md.
     private static final String CONTEXT_QUERY =
             "query CommunityPointsSettingsQuery($id: ID!) {" +
             " user(id: $id) {" +
@@ -51,7 +50,6 @@ public final class ChannelPoints {
             " }" +
             "}";
 
-    // Exact Twitch 31.3.1 mutation structure recorded in the reference archive.
     private static final String CLAIM_QUERY =
             "mutation ClaimCommunityPointsMutation($input: ClaimCommunityPointsInput!) {" +
             " claimCommunityPoints(input: $input) {" +
@@ -65,7 +63,6 @@ public final class ChannelPoints {
             " }" +
             "}";
 
-    // PurpleTV ReVive fallback persisted-query hashes.
     private static final String FALLBACK_CONTEXT_HASH =
             "1530a003a7d374b0380b79db0be0534f30ff46e61cffa2bc0e2468a909fbc024";
     private static final String FALLBACK_CLAIM_HASH =
@@ -76,47 +73,29 @@ public final class ChannelPoints {
     private static volatile String channelId;
     private static volatile String channelLogin;
     private static volatile String lastSuccessfulClaimKey;
-    private static volatile boolean started;
+    private static ScheduledFuture<?> pollFuture;
 
     private ChannelPoints() {}
 
     public static void start(Context context) {
         if (context == null) return;
-
         final Context app = context.getApplicationContext();
         synchronized (STATE_LOCK) {
-            if (started) return;
-            started = true;
-        }
-
-        Thread watcher = new Thread(new Runnable() {
-            @Override
-            public void run() {
-                log("GraphQL auto-claim watcher started; poll=" + (POLL_INTERVAL_MS / 1000L) + "s");
-
-                while (!Thread.currentThread().isInterrupted()) {
-                    try {
-                        if (Settings.AUTO_CLAIM_CHANNEL_POINTS.get()) {
-                            claimAvailable(app);
-                        }
-                    } catch (Throwable error) {
-                        log("watcher error: " + error);
+            if (pollFuture != null) return;
+            pollFuture = KizuRuntime.scheduler().scheduleWithFixedDelay(() -> {
+                try {
+                    if (Settings.AUTO_CLAIM_CHANNEL_POINTS.get() && Utils.isAppInForeground()) {
+                        claimAvailable(app);
                     }
-
-                    try {
-                        Thread.sleep(POLL_INTERVAL_MS);
-                    } catch (InterruptedException interrupted) {
-                        Thread.currentThread().interrupt();
-                    }
+                } catch (Throwable error) {
+                    log("watcher error: " + error);
                 }
-            }
-        }, "kizu-channel-points");
-
-        watcher.setDaemon(true);
-        watcher.start();
+            }, POLL_INTERVAL_MS, POLL_INTERVAL_MS, TimeUnit.MILLISECONDS);
+            log("GraphQL auto-claim watcher scheduled; poll=" + (POLL_INTERVAL_MS / 1000L) + "s");
+        }
     }
 
-    /** Kizu: 視聴中チャンネルのID（予想の自動参加で使う） */
+    /** Kizu: 視聴中チャンネルのID（予想の自動参加・手動賭けで使う） */
     public static String currentChannelId() {
         return channelId;
     }
@@ -132,8 +111,6 @@ public final class ChannelPoints {
         channelId = newId;
         channelLogin = newLogin;
 
-        // Twitch creates the connection key repeatedly during chat setup. Only clear the duplicate
-        // guard when the actual channel changes.
         if (changed) {
             lastSuccessfulClaimKey = null;
             log("active channel id=" + newId + " login=" + newLogin);
@@ -145,7 +122,7 @@ public final class ChannelPoints {
         String login = channelLogin;
         if (id == null || id.isEmpty() || login == null || login.isEmpty()) return;
 
-        String token = readAuthToken(context);
+        String token = KizuRuntime.readAuthToken(context);
         if (token.isEmpty()) return;
 
         JSONObject available = fetchAvailableClaim(token, id, login);
@@ -182,11 +159,18 @@ public final class ChannelPoints {
                     .put("query", CONTEXT_QUERY);
 
             JSONObject response = parse(post(token, request.toString()));
-            JSONObject claim = extract31Claim(response);
-            if (claim != null) return claim;
+            if (response != null && !hasErrors(response)) {
+                JSONObject data = response.optJSONObject("data");
+                JSONObject user = data == null ? null : data.optJSONObject("user");
+                JSONObject self = user == null ? null : user.optJSONObject("self");
+                JSONObject points = self == null ? null : self.optJSONObject("communityPoints");
+                if (points != null) {
+                    // Valid response received; null availableClaim simply means no bonus chest is ready.
+                    return points.optJSONObject("availableClaim");
+                }
+            }
 
-            // Fallback to the PurpleTV ReVive context request if the gateway rejects the inline query
-            // or this particular account/session exposes only the legacy context shape.
+            // Fallback only if the primary context query failed or omitted communityPoints.
             JSONObject fallback = new JSONObject()
                     .put("operationName", "ChannelPointsContext")
                     .put("variables", new JSONObject().put("channelLogin", login))
@@ -201,16 +185,6 @@ public final class ChannelPoints {
             log("context request error: " + error);
             return null;
         }
-    }
-
-    private static JSONObject extract31Claim(JSONObject response) {
-        if (response == null || hasErrors(response)) return null;
-
-        JSONObject data = response.optJSONObject("data");
-        JSONObject user = data == null ? null : data.optJSONObject("user");
-        JSONObject self = user == null ? null : user.optJSONObject("self");
-        JSONObject points = self == null ? null : self.optJSONObject("communityPoints");
-        return points == null ? null : points.optJSONObject("availableClaim");
     }
 
     private static JSONObject extractPurpleClaim(JSONObject response) {
@@ -230,21 +204,16 @@ public final class ChannelPoints {
                     .put("channelID", id)
                     .put("claimID", claimId);
 
-            // Prefer the exact mutation text from Twitch 31.3.1 so a stale persisted-query hash
-            // cannot block the primary claim path.
             JSONObject request = new JSONObject()
                     .put("operationName", "ClaimCommunityPointsMutation")
                     .put("variables", new JSONObject().put("input", input))
                     .put("query", CLAIM_QUERY);
 
-            ClaimResult result = parseClaimResult(
-                    parse(post(token, request.toString()))
-            );
+            ClaimResult result = parseClaimResult(parse(post(token, request.toString())));
             if (result.success || result.authoritativeFailure) {
                 return result;
             }
 
-            // PurpleTV fallback.
             JSONObject fallback = new JSONObject()
                     .put("operationName", "ClaimCommunityPoints")
                     .put("variables", new JSONObject().put("input", input))
@@ -282,36 +251,6 @@ public final class ChannelPoints {
         return ClaimResult.success(points);
     }
 
-    /**
-     * Read the host application's own authToken_v2 without assuming a particular SharedPreferences
-     * XML filename. The token is used only for gql.twitch.tv and is never logged or persisted here.
-     */
-    private static String readAuthToken(Context context) {
-        File dir = new File(context.getApplicationInfo().dataDir, "shared_prefs");
-        File[] files = dir.listFiles();
-        if (files == null) return "";
-
-        for (File file : files) {
-            if (file == null || !file.getName().endsWith(".xml")) continue;
-
-            String name = file.getName();
-            name = name.substring(0, name.length() - 4);
-
-            try {
-                SharedPreferences prefs =
-                        context.getSharedPreferences(name, Context.MODE_PRIVATE);
-                String token = prefs.getString("authToken_v2", null);
-                if (token != null && !token.trim().isEmpty()) {
-                    return token.trim();
-                }
-            } catch (Throwable ignored) {
-                // Continue scanning the app's own preference files.
-            }
-        }
-
-        return "";
-    }
-
     private static String post(String token, String body) {
         HttpURLConnection connection = null;
         try {
@@ -331,19 +270,16 @@ public final class ChannelPoints {
 
             int status = connection.getResponseCode();
             if (status < 200 || status >= 300) {
+                drainQuietly(connection.getErrorStream());
                 log("GQL HTTP " + status);
                 return null;
             }
 
-            java.io.InputStream input = connection.getInputStream();
-            try {
-                java.io.ByteArrayOutputStream output =
-                        new java.io.ByteArrayOutputStream();
-
+            try (InputStream input = connection.getInputStream()) {
+                ByteArrayOutputStream output = new ByteArrayOutputStream();
                 byte[] buffer = new byte[8192];
                 int total = 0;
                 int read;
-
                 while ((read = input.read(buffer)) != -1) {
                     total += read;
                     if (total > MAX_RESPONSE_BYTES) {
@@ -352,10 +288,7 @@ public final class ChannelPoints {
                     }
                     output.write(buffer, 0, read);
                 }
-
                 return output.toString(StandardCharsets.UTF_8.name());
-            } finally {
-                input.close();
             }
         } catch (Throwable error) {
             log("GQL request failed: " + error);
@@ -363,6 +296,18 @@ public final class ChannelPoints {
         } finally {
             if (connection != null) connection.disconnect();
         }
+    }
+
+    private static void drainQuietly(InputStream stream) {
+        if (stream == null) return;
+        try (InputStream s = stream) {
+            byte[] buf = new byte[1024];
+            int total = 0;
+            int n;
+            while (total < 8192 && (n = s.read(buf)) != -1) {
+                total += n;
+            }
+        } catch (Throwable ignored) {}
     }
 
     private static JSONObject parse(String response) {

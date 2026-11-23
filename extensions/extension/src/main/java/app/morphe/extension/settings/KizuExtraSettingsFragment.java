@@ -7,11 +7,12 @@ import android.preference.Preference;
 import android.preference.PreferenceFragment;
 import android.preference.PreferenceScreen;
 import android.preference.SwitchPreference;
-import android.app.AlertDialog;
 import android.text.InputType;
 import android.util.Log;
 import android.widget.EditText;
 import android.widget.FrameLayout;
+import android.widget.ScrollView;
+import android.widget.Toast;
 import android.view.View;
 import android.widget.TextView;
 
@@ -30,7 +31,7 @@ public class KizuExtraSettingsFragment extends PreferenceFragment {
 
     static void addLink(PreferenceFragment owner, PreferenceScreen screen) {
         try {
-            Preference link = new Preference(SettingsUi.preferenceContext(screen.getContext()));
+            Preference link = TwitchUi.createSectionPreference(screen.getContext());
             link.setTitle(TITLE);
             link.setSummary("自分で追加した機能のオン・オフ");
             link.setOnPreferenceClickListener(clicked -> {
@@ -112,7 +113,7 @@ public class KizuExtraSettingsFragment extends PreferenceFragment {
                     KizuSettings.PREDICTION_OUTCOME.key, KizuSettings.PREDICTION_OUTCOME.defaultValue, 1, 10);
             addNumber(screen, "賭けるポイント", "1回の予想で賭けるポイント",
                     KizuSettings.PREDICTION_POINTS.key, KizuSettings.PREDICTION_POINTS.defaultValue, 1, 250000);
-            Preference note = new Preference(screen.getContext());
+            Preference note = new Preference(SettingsUi.preferenceContext(screen.getContext()));
             note.setSummary("切り替えはすぐに反映されます。");
             note.setSelectable(false);
             screen.addPreference(note);
@@ -140,27 +141,27 @@ public class KizuExtraSettingsFragment extends PreferenceFragment {
         p.setOnPreferenceClickListener(clicked -> {
             Activity a = getActivity();
             if (a == null) return true;
-            float d = a.getResources().getDisplayMetrics().density;
-            EditText text = new EditText(a);
+            EditText text = TwitchUi.createPillInput(a, "1行に1つ。本文と完全一致したコメントだけ消えます");
             text.setInputType(InputType.TYPE_CLASS_TEXT | InputType.TYPE_TEXT_FLAG_MULTI_LINE
                     | InputType.TYPE_TEXT_FLAG_NO_SUGGESTIONS);
             text.setSingleLine(false);
             text.setMinLines(4);
-            text.setHint("1行に1つ。本文と完全一致したコメントだけ消えます");
             text.setText(KizuSettings.NG_WORDS.get());
             FrameLayout box = new FrameLayout(a);
-            int pad = (int) (20 * d);
-            box.setPadding(pad, pad / 2, pad, 0);
+            box.setPadding(0, SettingsUi.dp(a, 4), 0, 0);
             box.addView(text);
-            new AlertDialog.Builder(a)
-                    .setTitle("NGワード")
-                    .setView(box)
-                    .setPositiveButton(android.R.string.ok, (dlg, w) -> {
+            TwitchUi.showThemedDialog(
+                    a,
+                    "NGワード",
+                    box,
+                    a.getString(android.R.string.ok),
+                    () -> {
                         KizuSettings.NG_WORDS.save(text.getText().toString());
                         p.setSummary(ngSummary());
-                    })
-                    .setNegativeButton(android.R.string.cancel, null)
-                    .show();
+                    },
+                    null,
+                    null,
+                    a.getString(android.R.string.cancel));
             return true;
         });
         screen.addPreference(p);
@@ -176,34 +177,49 @@ public class KizuExtraSettingsFragment extends PreferenceFragment {
             Activity a = getActivity();
             if (a == null) return true;
             String text = app.morphe.extension.CrashLog.read();
-            float d = a.getResources().getDisplayMetrics().density;
             TextView tv = new TextView(a);
             tv.setText(text.isEmpty() ? "記録はありません" : text);
             tv.setTextIsSelectable(true);
+            tv.setTextColor(text.isEmpty() ? SettingsUi.secondaryTextColor(a) : SettingsUi.primaryTextColor(a));
             tv.setTextSize(android.util.TypedValue.COMPLEX_UNIT_SP, 11);
             tv.setTypeface(android.graphics.Typeface.MONOSPACE);
-            int pad = (int) (16 * d);
-            tv.setPadding(pad, pad / 2, pad, pad / 2);
-            android.widget.ScrollView sv = new android.widget.ScrollView(a);
+            int pad = SettingsUi.dp(a, 12);
+            tv.setPadding(pad, pad, pad, pad);
+            int maxHeight = Math.round(a.getResources().getDisplayMetrics().heightPixels * 0.52f);
+            ScrollView sv = new ScrollView(a) {
+                @Override
+                protected void onMeasure(int widthMeasureSpec, int heightMeasureSpec) {
+                    int bounded = View.MeasureSpec.makeMeasureSpec(maxHeight, View.MeasureSpec.AT_MOST);
+                    super.onMeasure(widthMeasureSpec, bounded);
+                }
+            };
+            sv.setBackground(TwitchUi.roundedRect(
+                    SettingsUi.inputBackgroundColor(a),
+                    SettingsUi.dp(a, 8),
+                    Math.max(1, SettingsUi.dp(a, 0.75f)),
+                    SettingsUi.borderColor(a)));
             sv.addView(tv);
-            AlertDialog.Builder b = new AlertDialog.Builder(a)
-                    .setTitle("最後に落ちたときの記録")
-                    .setView(sv)
-                    .setNegativeButton("閉じる", null);
-            if (!text.isEmpty()) {
-                b.setNeutralButton("消去", (dlg, w) -> {
-                    app.morphe.extension.CrashLog.clear();
-                    p.setSummary("記録なし");
-                });
-                b.setPositiveButton("コピー", (dlg, w) -> {
-                    try {
-                        android.content.ClipboardManager cm = (android.content.ClipboardManager)
-                                a.getSystemService(android.content.Context.CLIPBOARD_SERVICE);
-                        cm.setPrimaryClip(android.content.ClipData.newPlainText("Kizu crash log", text));
-                    } catch (Throwable t) { Log.e(TAG, "copy failed", t); }
-                });
-            }
-            b.show();
+            TwitchUi.showThemedDialog(
+                    a,
+                    "最後に落ちたときの記録",
+                    sv,
+                    text.isEmpty() ? null : "コピー",
+                    text.isEmpty() ? null : () -> {
+                        try {
+                            android.content.ClipboardManager cm = (android.content.ClipboardManager)
+                                    a.getSystemService(android.content.Context.CLIPBOARD_SERVICE);
+                            if (cm != null) {
+                                cm.setPrimaryClip(android.content.ClipData.newPlainText("Kizu crash log", text));
+                                Toast.makeText(a, "コピーしました", Toast.LENGTH_SHORT).show();
+                            }
+                        } catch (Throwable t) { Log.e(TAG, "copy failed", t); }
+                    },
+                    text.isEmpty() ? null : "消去",
+                    text.isEmpty() ? null : () -> {
+                        app.morphe.extension.CrashLog.clear();
+                        p.setSummary("記録なし");
+                    },
+                    "閉じる");
             return true;
         });
         screen.addPreference(p);
@@ -225,28 +241,29 @@ public class KizuExtraSettingsFragment extends PreferenceFragment {
         p.setOnPreferenceClickListener(clicked -> {
             Activity a = getActivity();
             if (a == null) return true;
-            float d = a.getResources().getDisplayMetrics().density;
-            EditText text = new EditText(a);
+            EditText text = TwitchUi.createPillInput(a, hint);
             text.setInputType(InputType.TYPE_CLASS_NUMBER);
             text.setSingleLine(true);
-            text.setHint(hint);
             text.setText(String.valueOf(sp.getInt(key, def)));
+            text.setSelection(text.length());
             FrameLayout box = new FrameLayout(a);
-            int pad = (int) (20 * d);
-            box.setPadding(pad, pad / 2, pad, 0);
+            box.setPadding(0, SettingsUi.dp(a, 4), 0, 0);
             box.addView(text);
-            new AlertDialog.Builder(a)
-                    .setTitle(title)
-                    .setView(box)
-                    .setPositiveButton(android.R.string.ok, (dlg, w) -> {
+            TwitchUi.showThemedDialog(
+                    a,
+                    title,
+                    box,
+                    a.getString(android.R.string.ok),
+                    () -> {
                         int v;
                         try { v = Integer.parseInt(text.getText().toString().trim()); } catch (Throwable t) { v = def; }
                         v = Math.max(min, Math.min(max, v));
                         sp.edit().putInt(key, v).apply();
                         p.setSummary(String.valueOf(v));
-                    })
-                    .setNegativeButton(android.R.string.cancel, null)
-                    .show();
+                    },
+                    null,
+                    null,
+                    a.getString(android.R.string.cancel));
             return true;
         });
         screen.addPreference(p);

@@ -3,10 +3,11 @@ package app.morphe.extension.twitch.emotes;
 import android.app.Activity;
 import android.app.Application;
 import android.content.Context;
-import android.os.Bundle;
 import android.graphics.Color;
+import android.graphics.Typeface;
 import android.graphics.drawable.ColorDrawable;
 import android.graphics.drawable.Drawable;
+import android.os.Bundle;
 import android.os.Handler;
 import android.os.Looper;
 import android.os.SystemClock;
@@ -33,16 +34,14 @@ import java.util.Set;
 import java.util.WeakHashMap;
 import java.util.concurrent.CopyOnWriteArrayList;
 
+import app.morphe.extension.Utils;
+import app.morphe.extension.settings.SettingsUi;
+import app.morphe.extension.settings.TwitchUi;
 import io.github.bakwudo.uyu.extension.settings.Settings;
 
 /**
- * PurpleTV-style independent emote suggestion strip.
- *
- * PurpleTV uses Xposed to observe MultiAutoCompleteTextView construction. Morphe cannot hook
- * Android framework constructors, so Kizu discovers Twitch's resource-named "message_input"
- * from the existing chat-row bind hook and wires the same TextWatcher/popup behavior there.
- *
- * This path intentionally does not inspect or mutate Twitch's private autocomplete provider.
+ * PurpleTV-style independent emote suggestion strip styled with Twitch's Light/Dark surface,
+ * border hairline, and rounded ripple emote chips.
  */
 @SuppressWarnings({"unused", "rawtypes", "unchecked"})
 public final class EmoteAutocomplete {
@@ -56,26 +55,21 @@ public final class EmoteAutocomplete {
     private static final long STRIP_TIMEOUT_MS = 4_000L;
 
     private static final Set<EditText> WIRED =
-            Collections.newSetFromMap(new WeakHashMap<EditText, Boolean>());
+            Collections.newSetFromMap(new WeakHashMap<>());
     private static final WeakHashMap<View, DiscoveryState> DISCOVERIES = new WeakHashMap<>();
     private static final WeakHashMap<View, WeakReference<EditText>> ROOT_INPUTS = new WeakHashMap<>();
     private static final Set<Application> OBSERVED_APPLICATIONS =
-            Collections.newSetFromMap(new WeakHashMap<Application, Boolean>());
+            Collections.newSetFromMap(new WeakHashMap<>());
     private static final CopyOnWriteArrayList<WeakReference<InputState>> STATES =
             new CopyOnWriteArrayList<>();
 
-    private EmoteAutocomplete() { }
+    private EmoteAutocomplete() {}
 
-    /**
-     * Application-level discovery starts before any chat row is bound. Chat-row binding remains
-     * a fallback for Twitch screens whose chat composer is inflated after Activity resume.
-     */
     public static void startActivityDiscovery(Context context) {
         try {
             if (context == null) return;
             Context appContext = context.getApplicationContext();
-            if (!(appContext instanceof Application)) return;
-            Application app = (Application) appContext;
+            if (!(appContext instanceof Application app)) return;
             boolean register;
             synchronized (OBSERVED_APPLICATIONS) {
                 register = OBSERVED_APPLICATIONS.add(app);
@@ -85,26 +79,22 @@ public final class EmoteAutocomplete {
                     @Override public void onActivityCreated(Activity activity, Bundle state) {
                         discoverActivity(activity, "created");
                     }
-                    @Override public void onActivityStarted(Activity activity) { }
+                    @Override public void onActivityStarted(Activity activity) {}
                     @Override public void onActivityResumed(Activity activity) {
                         discoverActivity(activity, "resumed");
                     }
-                    @Override public void onActivityPaused(Activity activity) { }
-                    @Override public void onActivityStopped(Activity activity) { }
-                    @Override public void onActivitySaveInstanceState(Activity activity, Bundle state) { }
-                    @Override public void onActivityDestroyed(Activity activity) { }
+                    @Override public void onActivityPaused(Activity activity) {}
+                    @Override public void onActivityStopped(Activity activity) {}
+                    @Override public void onActivitySaveInstanceState(Activity activity, Bundle state) {}
+                    @Override public void onActivityDestroyed(Activity activity) {}
                 });
                 Log.i(TAG, "Registered early Activity lifecycle discovery");
             }
 
             if (Settings.EMOTES_THIRD_PARTY.get() && Settings.EMOTES_AUTOCOMPLETE.get()) {
-                long started = SystemClock.elapsedRealtime();
-                NativeEmoteCatalog.snapshot(); // force the bundled native list to initialize at startup
+                NativeEmoteCatalog.snapshot();
                 NativeEmoteCatalog.ensureLoaded(app);
-                EmoteSupport.ensureAutocompleteCatalog(app); // requests run on Kizu's worker pool
-                Log.i(TAG, "Autocomplete catalogs primed in " +
-                        (SystemClock.elapsedRealtime() - started) + "ms; native entries=" +
-                        NativeEmoteCatalog.size());
+                EmoteSupport.ensureAutocompleteCatalog(app);
             }
         } catch (Throwable error) {
             Log.w(TAG, "Could not start early Activity discovery", error);
@@ -113,8 +103,8 @@ public final class EmoteAutocomplete {
 
     private static void discoverActivity(Activity activity, String phase) {
         try {
-            if (activity == null || !Settings.EMOTES_THIRD_PARTY.get() ||
-                    !Settings.EMOTES_AUTOCOMPLETE.get()) return;
+            if (activity == null || !Settings.EMOTES_THIRD_PARTY.get()
+                    || !Settings.EMOTES_AUTOCOMPLETE.get()) return;
             View decor = activity.getWindow() == null ? null : activity.getWindow().getDecorView();
             if (decor != null) startDiscovery(decor, "activity-" + phase);
         } catch (Throwable error) {
@@ -122,10 +112,26 @@ public final class EmoteAutocomplete {
         }
     }
 
-    /**
-     * Chat-row fallback. A discovery observer stays attached to the root and reacts to later layout
-     * passes, so it does not need another message-row bind if Twitch inflates the composer later.
-     */
+    public static void attachDirectly(View view) {
+        if (!(view instanceof EditText input)) return;
+        try {
+            View root = input.getRootView();
+            if (root != null) {
+                synchronized (ROOT_INPUTS) {
+                    ROOT_INPUTS.put(root, new WeakReference<>(input));
+                }
+                DiscoveryState state;
+                synchronized (DISCOVERIES) {
+                    state = DISCOVERIES.remove(root);
+                }
+                if (state != null) state.finish("direct");
+            }
+            attach(input);
+        } catch (Throwable error) {
+            Log.w(TAG, "Direct autocomplete attach failed", error);
+        }
+    }
+
     public static void attachFromChatRow(TextView chatRow) {
         try {
             if (chatRow == null) return;
@@ -141,8 +147,8 @@ public final class EmoteAutocomplete {
         synchronized (ROOT_INPUTS) {
             WeakReference<EditText> reference = ROOT_INPUTS.get(root);
             EditText previous = reference == null ? null : reference.get();
-            if (previous != null && previous.isAttachedToWindow() && previous.isShown()) return;
-            ROOT_INPUTS.remove(root);
+            if (previous != null && previous.isAttachedToWindow()) return;
+            if (previous != null) ROOT_INPUTS.remove(root);
         }
 
         DiscoveryState state;
@@ -160,24 +166,10 @@ public final class EmoteAutocomplete {
 
     private static EditText findChatInput(View view) {
         if (view == null) return null;
-        if (view instanceof EditText && isChatInput(view)) return (EditText) view;
-        if (!(view instanceof ViewGroup)) return null;
-        ViewGroup group = (ViewGroup) view;
-        for (int index = 0; index < group.getChildCount(); index++) {
-            EditText match = findChatInput(group.getChildAt(index));
-            if (match != null) return match;
-        }
-        return null;
-    }
-
-    private static boolean isChatInput(View view) {
-        try {
-            int id = view.getId();
-            return id != View.NO_ID &&
-                    CHAT_INPUT_RESOURCE.equals(view.getResources().getResourceEntryName(id));
-        } catch (Throwable ignored) {
-            return false;
-        }
+        int id = Utils.getResourceId(view.getContext(), CHAT_INPUT_RESOURCE, "id");
+        if (id == 0) return null;
+        View match = view.findViewById(id);
+        return match instanceof EditText et ? et : null;
     }
 
     private static void attach(EditText input) {
@@ -193,16 +185,12 @@ public final class EmoteAutocomplete {
             NativeEmoteCatalog.snapshot();
             NativeEmoteCatalog.ensureLoaded(input.getContext());
             EmoteSupport.ensureAutocompleteCatalog(input.getContext());
-        } catch (Throwable error) {
-            Log.d(TAG, "Autocomplete prewarm skipped", error);
-        }
-        Log.i(TAG, "Input listener attached; class=" + input.getClass().getName() +
-                " id=" + input.getId() + " since-process-ms=" + attachedAt +
-                " native-entries=" + NativeEmoteCatalog.size());
+        } catch (Throwable ignored) {}
+        Log.i(TAG, "Input listener attached; class=" + input.getClass().getName()
+                + " id=" + input.getId() + " native-entries=" + NativeEmoteCatalog.size());
         input.post(state::refreshOnMain);
     }
 
-    /** Called after catalogs load or the current channel changes. */
     static void refreshAll() {
         for (WeakReference<InputState> reference : STATES) {
             InputState state = reference.get();
@@ -214,19 +202,10 @@ public final class EmoteAutocomplete {
         }
     }
 
-    /** Called by Kizu's shared image loader when a suggestion image becomes available. */
     static void onImageLoaded(String url) {
         if (url != null) refreshAll();
     }
 
-    /**
-     * Retain Twitch's native trigger adjustment, but no longer patch its private suggestion
-     * provider. The custom strip is populated independently from Kizu's third-party catalog.
-     */
-    /**
-     * True when the Kizu strip should own this token. The bytecode hook uses this to suppress
-     * Twitch's competing vertical emote dropdown. Mentions and slash commands retain native UI.
-     */
     public static boolean shouldOpenAutocomplete(CharSequence text) {
         if (!Settings.EMOTES_THIRD_PARTY.get() || !Settings.EMOTES_AUTOCOMPLETE.get() || text == null) {
             return false;
@@ -239,7 +218,6 @@ public final class EmoteAutocomplete {
         return token.length() >= MIN_PREFIX_LENGTH;
     }
 
-    /** Return the active token start, skipping an optional colon when Kizu owns the search. */
     public static int getBareAutocompleteStart(CharSequence text) {
         if (!shouldOpenAutocomplete(text)) return -1;
         String value = text.toString();
@@ -280,8 +258,6 @@ public final class EmoteAutocomplete {
                 root.addOnAttachStateChangeListener(this);
                 ViewTreeObserver observer = root.getViewTreeObserver();
                 if (observer.isAlive()) observer.addOnGlobalLayoutListener(layoutListener);
-                Log.i(TAG, "Input discovery started source=" + source +
-                        " root=" + root.getClass().getName());
                 scan("initial");
             } catch (Throwable error) {
                 Log.w(TAG, "Could not observe root for input discovery", error);
@@ -326,8 +302,7 @@ public final class EmoteAutocomplete {
                     synchronized (ROOT_INPUTS) {
                         ROOT_INPUTS.put(root, new WeakReference<>(input));
                     }
-                    Log.i(TAG, "Input discovered source=" + source + " attempts=" + attempts +
-                            " elapsed-ms=" + (now - startedAt));
+                    Log.i(TAG, "Input discovered source=" + source + " attempts=" + attempts);
                     finish("found");
                     attach(input);
                     return;
@@ -337,8 +312,6 @@ public final class EmoteAutocomplete {
             }
 
             if (now - startedAt >= DISCOVERY_TIMEOUT_MS) {
-                Log.i(TAG, "Input discovery timed out after " + (now - startedAt) +
-                        "ms; attempts=" + attempts + " source=" + source);
                 finish("timeout");
             } else {
                 scheduleRetry(root);
@@ -354,7 +327,7 @@ public final class EmoteAutocomplete {
             }
         }
 
-        private void finish(String reason) {
+        void finish(String reason) {
             if (finished) return;
             finished = true;
             View root = rootReference.get();
@@ -364,7 +337,7 @@ public final class EmoteAutocomplete {
                 try {
                     ViewTreeObserver observer = root.getViewTreeObserver();
                     if (observer.isAlive()) observer.removeOnGlobalLayoutListener(layoutListener);
-                } catch (Throwable ignored) { }
+                } catch (Throwable ignored) {}
                 synchronized (DISCOVERIES) {
                     if (DISCOVERIES.get(root) == this) DISCOVERIES.remove(root);
                 }
@@ -378,31 +351,21 @@ public final class EmoteAutocomplete {
         private final Handler handler = new Handler(Looper.getMainLooper());
         private final long attachedAt;
         private PopupWindow popup;
+        private LinearLayout stripWrapper;
+        private View stripBorder;
         private LinearLayout stripRow;
         private HorizontalScrollView stripScroll;
-        private View popupRoot;
+        private boolean stripDark;
         private int tokenStart;
         private int tokenEnd;
-        private int activePrefixLength;
-        private long firstTextAt;
-        private boolean firstTextLogged;
-        private boolean firstNativeQueryLogged;
-        private boolean firstCatalogQueryLogged;
-        private boolean firstPopupLogged;
         private List<Emote> visibleSuggestions = Collections.emptyList();
 
         private final Runnable autoDismiss = this::hidePopup;
 
         private final TextWatcher watcher = new TextWatcher() {
-            @Override public void beforeTextChanged(CharSequence s, int start, int count, int after) { }
-            @Override public void onTextChanged(CharSequence s, int start, int before, int count) { }
+            @Override public void beforeTextChanged(CharSequence s, int start, int count, int after) {}
+            @Override public void onTextChanged(CharSequence s, int start, int before, int count) {}
             @Override public void afterTextChanged(Editable editable) {
-                if (!firstTextLogged) {
-                    firstTextLogged = true;
-                    firstTextAt = SystemClock.elapsedRealtime();
-                    Log.i(TAG, "First composer text change arrived " +
-                            (firstTextAt - attachedAt) + "ms after listener attachment");
-                }
                 refreshOnMain();
             }
         };
@@ -443,8 +406,8 @@ public final class EmoteAutocomplete {
                 return;
             }
             try {
-                if (!input.isAttachedToWindow() || !input.isShown() ||
-                        !Settings.EMOTES_THIRD_PARTY.get() || !Settings.EMOTES_AUTOCOMPLETE.get()) {
+                if (!input.isAttachedToWindow() || !input.isShown()
+                        || !Settings.EMOTES_THIRD_PARTY.get() || !Settings.EMOTES_AUTOCOMPLETE.get()) {
                     hidePopup();
                     return;
                 }
@@ -460,8 +423,6 @@ public final class EmoteAutocomplete {
                 int end = cursor;
                 while (end < text.length() && !Character.isWhitespace(text.charAt(end))) end++;
                 String rawToken = text.substring(start, end);
-                // Keep Twitch's native UI for mentions and slash commands. For emote names,
-                // accept bare text ("Kappa") and colon-prefixed text (":Kappa") in one strip.
                 if (rawToken.startsWith("@") || rawToken.startsWith("/")) {
                     hidePopup();
                     return;
@@ -474,43 +435,16 @@ public final class EmoteAutocomplete {
 
                 tokenStart = start;
                 tokenEnd = end;
-                activePrefixLength = token.length();
                 Context context = input.getContext();
 
-                // Do a pure local native match first. It is independent of all network catalogs,
-                // so a native suggestion can be displayed even if every provider is still loading.
-                long nativeStarted = SystemClock.elapsedRealtime();
-                List<Emote> nativeMatches = EmoteSupport.autocompleteNative(token, MAX_SUGGESTIONS);
-                long nativeElapsed = SystemClock.elapsedRealtime() - nativeStarted;
-                if (!firstNativeQueryLogged) {
-                    firstNativeQueryLogged = true;
-                    Log.i(TAG, "First native prefix match took " + nativeElapsed +
-                            "ms; catalog-size=" + NativeEmoteCatalog.size() +
-                            " matches=" + (nativeMatches == null ? 0 : nativeMatches.size()));
-                }
-                if (nativeMatches != null && !nativeMatches.isEmpty()) {
-                    visibleSuggestions = new ArrayList<>(nativeMatches);
-                    showStrip(input, visibleSuggestions);
-                    scheduleDismiss();
-                }
-
-                // Start or refresh provider loading only after the local suggestions have had a
-                // chance to populate the strip. ensureLoaded only schedules background work.
                 EmoteSupport.ensureAutocompleteCatalog(context);
-                long catalogStarted = SystemClock.elapsedRealtime();
                 List<Emote> matches = EmoteSupport.autocomplete(
                         EmoteSupport.getCurrentChannelId(), token, MAX_SUGGESTIONS);
-                long catalogElapsed = SystemClock.elapsedRealtime() - catalogStarted;
-                if (!firstCatalogQueryLogged) {
-                    firstCatalogQueryLogged = true;
-                    Log.i(TAG, "First merged autocomplete match took " + catalogElapsed +
-                            "ms; matches=" + (matches == null ? 0 : matches.size()));
-                }
                 if (matches != null && !matches.isEmpty()) {
                     visibleSuggestions = new ArrayList<>(matches);
                     showStrip(input, visibleSuggestions);
                     scheduleDismiss();
-                } else if (nativeMatches == null || nativeMatches.isEmpty()) {
+                } else {
                     visibleSuggestions = Collections.emptyList();
                     hidePopup();
                 }
@@ -522,25 +456,36 @@ public final class EmoteAutocomplete {
 
         private void showStrip(EditText input, List<Emote> suggestions) {
             Context context = input.getContext();
-            int stripHeight = dp(context, 44f);
+            int stripHeight = dp(context, 48f);
             int imageSize = dp(context, 26f);
+            boolean dark = SettingsUi.isDark(context);
 
-            // Reuse the same PopupWindow and scroll container. Updating the children in-place
-            // avoids a dismiss/show cycle on each keystroke and provider/image callback.
-            if (stripRow == null || stripScroll == null || popup == null) {
+            if (stripWrapper == null || stripRow == null || stripScroll == null || popup == null) {
+                stripDark = dark;
+                stripWrapper = new LinearLayout(context);
+                stripWrapper.setOrientation(LinearLayout.VERTICAL);
+                stripWrapper.setBackgroundColor(SettingsUi.surfaceColor(context));
+                stripWrapper.setElevation(dp(context, 4f));
+
+                stripBorder = new View(context);
+                stripBorder.setBackgroundColor(SettingsUi.borderColor(context));
+                stripWrapper.addView(stripBorder, new LinearLayout.LayoutParams(
+                        ViewGroup.LayoutParams.MATCH_PARENT, Math.max(1, dp(context, 0.75f))));
+
                 stripRow = new LinearLayout(context);
                 stripRow.setOrientation(LinearLayout.HORIZONTAL);
                 stripRow.setGravity(Gravity.CENTER_VERTICAL);
-                stripRow.setPadding(dp(context, 4f), dp(context, 3f), dp(context, 4f), dp(context, 3f));
+                stripRow.setPadding(dp(context, 6f), dp(context, 4f), dp(context, 6f), dp(context, 4f));
 
                 stripScroll = new HorizontalScrollView(context);
                 stripScroll.setHorizontalScrollBarEnabled(false);
                 stripScroll.setFillViewport(false);
-                stripScroll.setBackgroundColor(Color.parseColor("#FF1F1925"));
                 stripScroll.addView(stripRow, new HorizontalScrollView.LayoutParams(
                         ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.MATCH_PARENT));
+                stripWrapper.addView(stripScroll, new LinearLayout.LayoutParams(
+                        ViewGroup.LayoutParams.MATCH_PARENT, 0, 1f));
 
-                popup = new PopupWindow(stripScroll, ViewGroup.LayoutParams.MATCH_PARENT,
+                popup = new PopupWindow(stripWrapper, ViewGroup.LayoutParams.MATCH_PARENT,
                         stripHeight, false);
                 popup.setOutsideTouchable(false);
                 popup.setTouchable(true);
@@ -548,16 +493,32 @@ public final class EmoteAutocomplete {
                 popup.setClippingEnabled(false);
                 popup.setInputMethodMode(PopupWindow.INPUT_METHOD_NOT_NEEDED);
             } else {
+                if (stripDark != dark) {
+                    stripDark = dark;
+                    stripWrapper.setBackgroundColor(SettingsUi.surfaceColor(context));
+                    stripBorder.setBackgroundColor(SettingsUi.borderColor(context));
+                }
                 stripRow.removeAllViews();
             }
+
+            int chipFill = SettingsUi.alternateBackgroundColor(context);
+            int chipStroke = SettingsUi.borderColor(context);
+            int chipText = SettingsUi.primaryTextColor(context);
+            float chipRadius = dp(context, 8f);
+            int chipStrokePx = Math.max(1, dp(context, 0.5f));
+            int chipMargin = dp(context, 3f);
 
             for (Emote emote : suggestions) {
                 if (emote == null || emote.name == null) continue;
                 LinearLayout chip = new LinearLayout(context);
                 chip.setOrientation(LinearLayout.HORIZONTAL);
                 chip.setGravity(Gravity.CENTER_VERTICAL);
-                chip.setPadding(dp(context, 6f), dp(context, 3f), dp(context, 6f), dp(context, 3f));
+                chip.setPadding(dp(context, 8f), dp(context, 4f), dp(context, 8f), dp(context, 4f));
+                chip.setBackground(TwitchUi.ripple(context,
+                        TwitchUi.roundedRect(chipFill, chipRadius, chipStrokePx, chipStroke),
+                        chipRadius));
                 chip.setClickable(true);
+                chip.setFocusable(true);
                 chip.setOnClickListener(view -> replaceToken(input, emote.name));
 
                 Drawable drawable = EmoteSupport.autocompleteDrawable(input.getResources(), emote);
@@ -569,16 +530,22 @@ public final class EmoteAutocomplete {
                     image.setScaleType(ImageView.ScaleType.FIT_CENTER);
                     LinearLayout.LayoutParams imageParams =
                             new LinearLayout.LayoutParams(imageSize, imageSize);
-                    imageParams.rightMargin = dp(context, 4f);
+                    imageParams.rightMargin = dp(context, 5f);
                     chip.addView(image, imageParams);
                 }
 
                 TextView name = new TextView(context);
                 name.setText(emote.name);
-                name.setTextColor(Color.WHITE);
+                name.setTextColor(chipText);
                 name.setTextSize(TypedValue.COMPLEX_UNIT_SP, 13f);
+                name.setTypeface(Typeface.DEFAULT_BOLD);
                 chip.addView(name);
-                stripRow.addView(chip);
+
+                LinearLayout.LayoutParams chipLp = new LinearLayout.LayoutParams(
+                        ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT);
+                chipLp.leftMargin = chipMargin;
+                chipLp.rightMargin = chipMargin;
+                stripRow.addView(chip, chipLp);
             }
 
             View root = input.getRootView();
@@ -590,19 +557,10 @@ public final class EmoteAutocomplete {
                 int y = Math.max(dp(context, 4f), location[1] - stripHeight);
                 y = Math.min(y, Math.max(dp(context, 4f), rootHeight - stripHeight));
 
-                boolean wasShowing = popup.isShowing();
-                if (!wasShowing) {
-                    popupRoot = root;
+                if (!popup.isShowing()) {
                     popup.showAtLocation(root, Gravity.TOP | Gravity.START, 0, y);
                 } else {
                     popup.update(0, y, ViewGroup.LayoutParams.MATCH_PARENT, stripHeight);
-                }
-                if (!firstPopupLogged) {
-                    firstPopupLogged = true;
-                    long now = SystemClock.elapsedRealtime();
-                    long sinceFirstText = firstTextLogged ? now - firstTextAt : -1L;
-                    Log.i(TAG, "First autocomplete strip displayed " + sinceFirstText +
-                            "ms after first text change; prefix-length=" + activePrefixLength);
                 }
             } catch (Throwable error) {
                 Log.w(TAG, "Could not display autocomplete strip", error);
@@ -630,7 +588,7 @@ public final class EmoteAutocomplete {
         private void hidePopup() {
             try {
                 if (popup != null && popup.isShowing()) popup.dismiss();
-            } catch (Throwable ignored) { }
+            } catch (Throwable ignored) {}
         }
     }
 }

@@ -16,11 +16,13 @@ import android.widget.ImageView;
 import java.util.List;
 
 import io.github.bakwudo.uyu.extension.Utils;
+import io.github.bakwudo.uyu.extension.settings.KizuSettings;
 import io.github.bakwudo.uyu.extension.settings.Setting;
 import io.github.bakwudo.uyu.extension.settings.Settings;
 
 final class DanmakuOverlay {
     static final String VIEW_TAG = "uyu_danmaku";
+    private static final Object TAG_STYLED = new Object();
 
     private static final String[] TOP_BUTTONS = {
             "audio_and_subtitles", "settings_button", "share_button", "cast_button", "create_clip_text_button", "info",
@@ -30,6 +32,9 @@ final class DanmakuOverlay {
     private final View video;
     private final ViewGroup controls;
     private final int miniPlayerLayoutId;
+    private final int backButtonId;
+    private final int settingsButtonId;
+    private final int[] topButtonIds;
     private final DanmakuView danmaku;
     private final ImageView button;
     private final DanmakuToggleIcon icon;
@@ -39,12 +44,14 @@ final class DanmakuOverlay {
     private final DanmakuQuickSettings quickSettings;
     private final Rect rect = new Rect();
     private final Rect buttonRect = new Rect();
+    private volatile boolean active;
 
     private final SharedPreferences.OnSharedPreferenceChangeListener settingsListener = (preferences, key) -> {
         if (Settings.DANMAKU_ENABLED.key.equals(key)
                 || Settings.DANMAKU_PORTRAIT.key.equals(key)
                 || Settings.DANMAKU_MINI_PLAYER.key.equals(key)
-                || Settings.DANMAKU_PICTURE_IN_PICTURE.key.equals(key)) {
+                || Settings.DANMAKU_PICTURE_IN_PICTURE.key.equals(key)
+                || KizuSettings.DANMAKU_QUICK_SETTINGS.key.equals(key)) {
             update();
         }
     };
@@ -55,6 +62,12 @@ final class DanmakuOverlay {
         this.controls = controls;
         Context context = player.getContext();
         miniPlayerLayoutId = Utils.getResourceId(context, "draggable_layout", "id");
+        backButtonId = Utils.getResourceId(context, "back_button", "id");
+        settingsButtonId = Utils.getResourceId(context, "settings_button", "id");
+        topButtonIds = new int[TOP_BUTTONS.length];
+        for (int i = 0; i < TOP_BUTTONS.length; i++) {
+            topButtonIds[i] = Utils.getResourceId(context, TOP_BUTTONS[i], "id");
+        }
 
         danmaku = new DanmakuView(context);
         danmaku.setTag(VIEW_TAG);
@@ -74,8 +87,6 @@ final class DanmakuOverlay {
             Settings.DANMAKU_ENABLED.save(!Settings.DANMAKU_ENABLED.get());
             update();
         });
-        button.setTranslationZ(1);
-        button.setOutlineProvider(null);
         controls.addView(button, new FrameLayout.LayoutParams(0, 0, Gravity.TOP | Gravity.RIGHT));
 
         settingsButton = new ImageView(context);
@@ -84,8 +95,6 @@ final class DanmakuOverlay {
         settingsButton.setContentDescription("Danmaku settings");
         settingsButton.setVisibility(View.INVISIBLE);
         settingsButton.setOnClickListener(v -> quickSettings.toggle());
-        settingsButton.setTranslationZ(1);
-        settingsButton.setOutlineProvider(null);
         controls.addView(settingsButton, new FrameLayout.LayoutParams(0, 0, Gravity.TOP | Gravity.RIGHT));
 
         // チャット設定を開くボタン（チャット欄の三点リーダーの代わり）
@@ -102,8 +111,6 @@ final class DanmakuOverlay {
                 Utils.logError("Kizu: chat settings failed", t);
             }
         });
-        chatButton.setTranslationZ(1);
-        chatButton.setOutlineProvider(null);
         controls.addView(chatButton, new FrameLayout.LayoutParams(0, 0, Gravity.TOP | Gravity.RIGHT));
 
         // Kizu: 予想に手動で賭ける画面を開くボタン
@@ -120,14 +127,12 @@ final class DanmakuOverlay {
                 Utils.logError("Kizu: bet failed", t);
             }
         });
-        betButton.setTranslationZ(1);
-        betButton.setOutlineProvider(null);
         controls.addView(betButton, new FrameLayout.LayoutParams(0, 0, Gravity.TOP | Gravity.RIGHT));
 
         player.addOnLayoutChangeListener((v, l, t, r, b, ol, ot, or, ob) -> update());
         video.addOnLayoutChangeListener((v, l, t, r, b, ol, ot, or, ob) -> update());
         controls.addOnLayoutChangeListener((v, l, t, r, b, ol, ot, or, ob) -> {
-            try { updateButton(); } catch (Exception ex) { Utils.logError("Danmaku: failed to update the button", ex); }
+            try { updateButton(isAvailable()); } catch (Exception ex) { Utils.logError("Danmaku: failed to update the button", ex); }
         });
         danmaku.addOnAttachStateChangeListener(new View.OnAttachStateChangeListener() {
             @Override public void onViewAttachedToWindow(View view) {
@@ -135,11 +140,15 @@ final class DanmakuOverlay {
                 update();
             }
             @Override public void onViewDetachedFromWindow(View view) {
+                active = false;
                 Setting.removeChangeListener(settingsListener);
                 quickSettings.dismiss();
             }
         });
-        if (danmaku.isAttachedToWindow()) Setting.addChangeListener(settingsListener);
+        if (danmaku.isAttachedToWindow()) {
+            Setting.addChangeListener(settingsListener);
+            active = isShown();
+        }
     }
 
     static DanmakuOverlay attach(View theatreRoot) {
@@ -171,6 +180,8 @@ final class DanmakuOverlay {
 
     boolean isShown() { return Settings.DANMAKU_ENABLED.get() && isAvailable(); }
 
+    boolean isCurrentlyActive() { return active; }
+
     private boolean isAvailable() {
         if (!danmaku.isAttachedToWindow()) return false;
         Context context = player.getContext();
@@ -200,9 +211,11 @@ final class DanmakuOverlay {
     }
 
     private void updateViews() {
-        boolean shown = isShown();
+        boolean available = isAvailable();
+        boolean shown = Settings.DANMAKU_ENABLED.get() && available;
+        active = shown;
         if (!shown) danmaku.clear();
-        if (!isAvailable()) quickSettings.dismiss();
+        if (!available || !KizuSettings.DANMAKU_QUICK_SETTINGS.get()) quickSettings.dismiss();
         danmaku.setVisibility(shown ? View.VISIBLE : View.INVISIBLE);
         icon.setOn(Settings.DANMAKU_ENABLED.get());
 
@@ -217,15 +230,18 @@ final class DanmakuOverlay {
             params.height = rect.height();
             danmaku.post(() -> danmaku.setLayoutParams(params));
         }
-        updateButton();
+        updateButton(available);
     }
 
-    private void updateButton() {
-        View backButton = controls.findViewById(Utils.getResourceId(controls.getContext(), "back_button", "id"));
+    private void updateButton(boolean available) {
+        View backButton = backButtonId != 0 ? controls.findViewById(backButtonId) : null;
         boolean controlsShown = backButton != null && backButton.getVisibility() == View.VISIBLE;
-        boolean visible = controlsShown && isAvailable();
-        button.setVisibility(visible ? View.VISIBLE : View.INVISIBLE);
-        settingsButton.setVisibility(visible ? View.VISIBLE : View.INVISIBLE);
+        boolean quickSettingsEnabled = KizuSettings.DANMAKU_QUICK_SETTINGS.get();
+        boolean visible = controlsShown && available;
+        boolean settingsVisible = visible && quickSettingsEnabled;
+        button.setVisibility(visible ? View.VISIBLE : View.GONE);
+        settingsButton.setVisibility(settingsVisible ? View.VISIBLE : View.GONE);
+        if (!settingsVisible) quickSettings.dismiss();
         chatButton.setVisibility(controlsShown ? View.VISIBLE : View.INVISIBLE);
         betButton.setVisibility(controlsShown ? View.VISIBLE : View.INVISIBLE);
 
@@ -233,10 +249,11 @@ final class DanmakuOverlay {
 
         View template = null;
         int left = controls.getWidth();
-        for (String name : TOP_BUTTONS) {
-            View view = controls.findViewById(Utils.getResourceId(controls.getContext(), name, "id"));
+        for (int id : topButtonIds) {
+            if (id == 0) continue;
+            View view = controls.findViewById(id);
             if (view == null) continue;
-            if (name.equals("settings_button")) template = view;
+            if (id == settingsButtonId) template = view;
             if (view.getVisibility() != View.VISIBLE || view.getWidth() == 0) continue;
             buttonRect.set(0, 0, view.getWidth(), view.getHeight());
             controls.offsetDescendantRectToMyCoords(view, buttonRect);
@@ -245,17 +262,27 @@ final class DanmakuOverlay {
         int size = template != null && template.getLayoutParams().width > 0
                 ? template.getLayoutParams().width
                 : Math.round(48 * controls.getResources().getDisplayMetrics().density);
-        int rightMargin = Math.max(0, controls.getWidth() - left);
-        layoutButton(button, template, size, rightMargin);
-        layoutButton(settingsButton, template, size, rightMargin + size);
-        layoutButton(chatButton, template, size, rightMargin + size * 2);
-        layoutButton(betButton, template, size, rightMargin + size * 3);
+        int offset = Math.max(0, controls.getWidth() - left);
+        if (visible) {
+            layoutButton(button, template, size, offset);
+            offset += size;
+            if (quickSettingsEnabled) {
+                layoutButton(settingsButton, template, size, offset);
+                offset += size;
+            }
+        }
+        layoutButton(chatButton, template, size, offset);
+        offset += size;
+        layoutButton(betButton, template, size, offset);
     }
 
     private static void layoutButton(ImageView target, View template, int size, int rightMargin) {
+        int topMargin = template != null && template.getLayoutParams() instanceof ViewGroup.MarginLayoutParams mlp
+                ? mlp.topMargin : 0;
         FrameLayout.LayoutParams params = (FrameLayout.LayoutParams) target.getLayoutParams();
-        if (params.width == size && params.rightMargin == rightMargin) return;
-        if (params.width == 0 && template instanceof ImageView templateButton) {
+        boolean styledNow = false;
+        if (target.getTag() != TAG_STYLED && template instanceof ImageView templateButton) {
+            target.setTag(TAG_STYLED);
             target.setPadding(template.getPaddingLeft(), template.getPaddingTop(),
                     template.getPaddingRight(), template.getPaddingBottom());
             target.setImageTintList(templateButton.getImageTintList());
@@ -263,10 +290,16 @@ final class DanmakuOverlay {
             if (background != null && background.getConstantState() != null) {
                 target.setBackground(background.getConstantState().newDrawable().mutate());
             }
+            styledNow = true;
+        }
+        if (!styledNow && params.width == size && params.height == size
+                && params.rightMargin == rightMargin && params.topMargin == topMargin) {
+            return;
         }
         params.width = size;
         params.height = size;
         params.rightMargin = rightMargin;
+        params.topMargin = topMargin;
         target.post(() -> target.setLayoutParams(params));
     }
 }

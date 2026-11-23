@@ -51,7 +51,9 @@ public final class SliderPreference extends Preference {
 
         SeekBar slider = new SeekBar(getContext());
         slider.setTag(SLIDER_TAG);
-        slider.setPaddingRelative(row.getPaddingStart(), 0, row.getPaddingEnd(), row.getPaddingBottom());
+        TwitchUi.styleSeekBar(getContext(), slider);
+        slider.setPaddingRelative(row.getPaddingStart(), SettingsUi.dp(getContext(), 2),
+                row.getPaddingEnd(), row.getPaddingBottom());
         layout.addView(slider, new LinearLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
         return layout;

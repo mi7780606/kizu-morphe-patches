@@ -81,7 +81,9 @@ public final class BlockAdsPatch {
 
             if (type == PlayerEvents.LIVE_CONTENT) {
                 // Also when blocking was switched off during an ad.
-                mainHandler.post(() -> AdBlockOverlay.end(player));
+                if (AdBlockOverlay.hasActiveBreaks()) {
+                    mainHandler.post(() -> AdBlockOverlay.end(player));
+                }
                 return false;
             }
             if (!isEnabled()) return false;

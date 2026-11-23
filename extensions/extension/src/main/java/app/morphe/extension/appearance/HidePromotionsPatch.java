@@ -3,17 +3,21 @@ package app.morphe.extension.appearance;
 import android.content.Context;
 import android.view.View;
 
+import java.lang.ref.WeakReference;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.HashSet;
+import java.util.Iterator;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
 import java.util.WeakHashMap;
-import java.lang.ref.WeakReference;
 
 import app.morphe.extension.Utils;
 import app.morphe.extension.settings.Settings;
+import app.morphe.extension.twitch.chat.ChatHistory;
+import app.morphe.extension.twitch.emotes.EmoteAutocomplete;
+import io.github.bakwudo.uyu.extension.settings.KizuSettings;
 
 @SuppressWarnings("unused")
 public final class HidePromotionsPatch {
@@ -56,42 +60,57 @@ public final class HidePromotionsPatch {
                     view -> Settings.HIDE_SUBSCRIPTION_PROMOTIONS.get(), false),
             new Target("turbo_upsell_container",
                     view -> Settings.HIDE_SUBSCRIPTION_PROMOTIONS.get(), false),
-            // Twitch 31.3.1's dedicated Stories shelf contains the RecyclerView
-            // resource "stories_shelf". This target is resolved only inside the
-            // BaseViewDelegate root, so it cannot match Home/navigation containers.
             new Target("stories_shelf",
                     view -> Settings.HIDE_STORIES.get(), true),
     };
 
-    /*
-     * Twitch 31.3.1 builds these two section models from fresh mutable lists. We retain the
-     * original list contents so Kizu can hide or restore the exact same data when the user flips
-     * the Home & navigation switch.
-     */
-    private static final Map<List<?>, List<?>> RESUME_ORIGINALS = new java.util.IdentityHashMap<>();
-    private static final Map<List<?>, List<?>> OFFLINE_ORIGINALS = new java.util.IdentityHashMap<>();
-    private static WeakReference<View> FOLLOWING_RECYCLER =
-            new WeakReference<>(null);
+    private static final int MAX_RETAINED_LISTS = 8;
+
+    private static final class RetainedList {
+        final WeakReference<List<?>> liveRef;
+        final List<?> original;
+
+        RetainedList(List<?> live, List<?> original) {
+            this.liveRef = new WeakReference<>(live);
+            this.original = original;
+        }
+    }
+
+    private static final List<RetainedList> RESUME_ORIGINALS = new ArrayList<>();
+    private static final List<RetainedList> OFFLINE_ORIGINALS = new ArrayList<>();
+    private static final Map<View, WeakReference<View>[]> HEADER_ITEMS_CACHE = new WeakHashMap<>();
+    private static WeakReference<View> FOLLOWING_RECYCLER = new WeakReference<>(null);
 
     public static void filterResumeWatchingList(List<?> items) {
-        rememberAndFilter(items, RESUME_ORIGINALS,
-                Settings.HIDE_RESUME_WATCHING.get());
+        rememberAndFilter(items, RESUME_ORIGINALS, Settings.HIDE_RESUME_WATCHING.get());
     }
 
     public static void filterOfflineChannelsList(List<?> items) {
-        rememberAndFilter(items, OFFLINE_ORIGINALS,
-                Settings.HIDE_OFFLINE_CHANNELS.get());
+        rememberAndFilter(items, OFFLINE_ORIGINALS, Settings.HIDE_OFFLINE_CHANNELS.get());
     }
 
     private static void rememberAndFilter(
             List<?> items,
-            Map<List<?>, List<?>> originals,
+            List<RetainedList> originals,
             boolean hide
     ) {
         if (items == null) return;
         synchronized (originals) {
-            if (!originals.containsKey(items)) {
-                originals.put(items, new ArrayList<>(items));
+            boolean found = false;
+            Iterator<RetainedList> it = originals.iterator();
+            while (it.hasNext()) {
+                List<?> live = it.next().liveRef.get();
+                if (live == null) {
+                    it.remove();
+                } else if (live == items) {
+                    found = true;
+                }
+            }
+            if (!found) {
+                while (originals.size() >= MAX_RETAINED_LISTS) {
+                    originals.remove(0);
+                }
+                originals.add(new RetainedList(items, new ArrayList<>(items)));
             }
             if (hide) items.clear();
         }
@@ -103,20 +122,23 @@ public final class HidePromotionsPatch {
         refreshFollowingAdapter();
     }
 
-    private static void applyListSetting(Map<List<?>, List<?>> originals, boolean hide) {
+    private static void applyListSetting(List<RetainedList> originals, boolean hide) {
         synchronized (originals) {
-            for (Map.Entry<List<?>, List<?>> entry : originals.entrySet()) {
-                List<?> items = entry.getKey();
-                List<?> original = entry.getValue();
-                if (items == null || original == null) continue;
-
+            Iterator<RetainedList> it = originals.iterator();
+            while (it.hasNext()) {
+                RetainedList entry = it.next();
+                List<?> items = entry.liveRef.get();
+                if (items == null || entry.original == null) {
+                    it.remove();
+                    continue;
+                }
                 if (hide) {
                     items.clear();
                 } else {
                     @SuppressWarnings("unchecked")
                     List<Object> mutable = (List<Object>) items;
                     @SuppressWarnings("unchecked")
-                    List<Object> saved = (List<Object>) original;
+                    List<Object> saved = (List<Object>) entry.original;
                     mutable.clear();
                     mutable.addAll(saved);
                 }
@@ -130,16 +152,13 @@ public final class HidePromotionsPatch {
             if (recycler == null || !recycler.isAttachedToWindow()) return;
 
             try {
-                java.lang.reflect.Method getAdapter =
-                        recycler.getClass().getMethod("getAdapter");
+                java.lang.reflect.Method getAdapter = recycler.getClass().getMethod("getAdapter");
                 Object adapter = getAdapter.invoke(recycler);
                 if (adapter != null) {
-                    java.lang.reflect.Method notify =
-                            adapter.getClass().getMethod("notifyDataSetChanged");
+                    java.lang.reflect.Method notify = adapter.getClass().getMethod("notifyDataSetChanged");
                     notify.invoke(adapter);
                 }
-            } catch (Throwable ignored) {
-            }
+            } catch (Throwable ignored) {}
 
             recycler.invalidate();
             recycler.requestLayout();
@@ -151,34 +170,76 @@ public final class HidePromotionsPatch {
     public static void bindGoAdFree(View root) {
         if (root == null) return;
         try {
-            bindGoAdFreeNow(root);
-            root.postDelayed(() -> bindGoAdFreeNow(root), 100L);
-            root.postDelayed(() -> bindGoAdFreeNow(root), 500L);
-            root.postDelayed(() -> bindGoAdFreeNow(root), 1200L);
+            if (bindGoAdFreeNow(root)) return;
+            WeakReference<View> ref = new WeakReference<>(root);
+            root.postDelayed(() -> {
+                View r = ref.get();
+                if (r != null && !bindGoAdFreeNow(r)) {
+                    r.postDelayed(() -> {
+                        View r2 = ref.get();
+                        if (r2 != null) bindGoAdFreeNow(r2);
+                    }, 500L);
+                }
+            }, 150L);
         } catch (Exception ex) {
             Utils.logError("Failed to bind Go Ad-Free", ex);
         }
     }
 
-    private static void bindGoAdFreeNow(View root) {
+    private static boolean bindGoAdFreeNow(View root) {
         Context context = root.getContext();
         int id = Utils.getResourceId(context, "following_tab_turbo_button", "id");
-        if (id == 0) return;
+        if (id == 0) return false;
         View button = root.findViewById(id);
         if (button != null) {
             HiddenView.attach(button, view -> Settings.HIDE_TURBO_UPSELL.get(), true);
+            return true;
         }
+        return false;
     }
 
     public static void onViewCreated(View root) {
+        if (root == null) return;
         try {
             Context context = root.getContext();
-            try {
-                int recyclerId = Utils.getResourceId(context, "following_list_recycler_view", "id");
-                View recycler = recyclerId == 0 ? null : root.findViewById(recyclerId);
-                if (recycler != null) FOLLOWING_RECYCLER = new WeakReference<>(recycler);
-            } catch (Throwable ignored) {
+            int recyclerId = Utils.getResourceId(context, "following_list_recycler_view", "id");
+            View recycler = recyclerId == 0 ? null : root.findViewById(recyclerId);
+            if (recycler != null) {
+                FOLLOWING_RECYCLER = new WeakReference<>(recycler);
+                try {
+                    KizuRecommended.bindFollowingRoot(root, recycler);
+                } catch (Throwable ignored) {}
             }
+
+            // Direct binding of Kizu views inside Twitch ViewDelegates avoids DecorView polling.
+            int chatListId = Utils.getResourceId(context, "chat_message_recycler_view", "id");
+            if (chatListId != 0) {
+                View chatList = root.findViewById(chatListId);
+                if (chatList != null) ChatHistory.attach(chatList);
+            }
+            int hypeLandscapeId = Utils.getResourceId(context, "one_chat_hype_train_landscape_container", "id");
+            if (hypeLandscapeId != 0) {
+                View hype = root.findViewById(hypeLandscapeId);
+                if (hype != null) {
+                    HiddenView.attach(hype, view -> KizuSettings.HIDE_HYPE_TRAIN.get(), true);
+                }
+            }
+            int chatMenuId = Utils.getResourceId(context, "view_chat_settings", "id");
+            if (chatMenuId != 0) {
+                View chatMenu = root.findViewById(chatMenuId);
+                if (chatMenu != null) KizuUiTweaks.bindChatMenuButton(chatMenu);
+            }
+            int cpOuterId = Utils.getResourceId(context, "community_points_outer_container", "id");
+            if (cpOuterId != 0) {
+                View cpOuter = root.findViewById(cpOuterId);
+                if (cpOuter != null) KizuUiTweaks.bindCommunityPoints(cpOuter);
+            }
+            int msgInputId = Utils.getResourceId(context, "message_input", "id");
+            if (msgInputId != 0) {
+                View msgInput = root.findViewById(msgInputId);
+                if (msgInput != null) EmoteAutocomplete.attachDirectly(msgInput);
+            }
+
             for (Target target : TARGETS) {
                 int id = target.id(context);
                 if (id == 0) continue;
@@ -209,13 +270,25 @@ public final class HidePromotionsPatch {
         return null;
     }
 
+    @SuppressWarnings("unchecked")
     private static boolean isChatHeaderEmpty(View header) {
         if (!Settings.HIDE_SUBSCRIBE_BUTTONS.get()) return false;
         boolean leaderboardHidden = Settings.HIDE_GIFT_LEADERBOARD.get();
-        for (Target item : OTHER_CHAT_HEADER_ITEMS) {
-            if (leaderboardHidden && item == LEADERBOARD_BUTTON) continue;
-            int id = item.id(header.getContext());
-            View view = id == 0 ? null : header.findViewById(id);
+        WeakReference<View>[] cached = HEADER_ITEMS_CACHE.get(header);
+        if (cached == null) {
+            cached = new WeakReference[OTHER_CHAT_HEADER_ITEMS.length];
+            Context ctx = header.getContext();
+            for (int i = 0; i < OTHER_CHAT_HEADER_ITEMS.length; i++) {
+                int id = OTHER_CHAT_HEADER_ITEMS[i].id(ctx);
+                View found = id == 0 ? null : header.findViewById(id);
+                cached[i] = found == null ? null : new WeakReference<>(found);
+            }
+            HEADER_ITEMS_CACHE.put(header, cached);
+        }
+        for (int i = 0; i < OTHER_CHAT_HEADER_ITEMS.length; i++) {
+            if (leaderboardHidden && OTHER_CHAT_HEADER_ITEMS[i] == LEADERBOARD_BUTTON) continue;
+            WeakReference<View> ref = cached[i];
+            View view = ref == null ? null : ref.get();
             if (view != null && view.getVisibility() == View.VISIBLE) return false;
         }
         return true;

@@ -1,46 +1,61 @@
 package app.morphe.extension.twitch.chat;
 
-import android.os.SystemClock;
 import android.graphics.Color;
 import android.graphics.ColorMatrix;
 import android.graphics.ColorMatrixColorFilter;
 import android.graphics.drawable.Drawable;
-import android.util.Log;
-import android.text.Spanned;
+import android.os.SystemClock;
 import android.text.SpannableStringBuilder;
+import android.text.Spanned;
 import android.text.SpannedString;
+import android.text.TextUtils;
 import android.text.style.ClickableSpan;
 import android.text.style.DynamicDrawableSpan;
 import android.text.style.ForegroundColorSpan;
 import android.text.style.StrikethroughSpan;
+import android.util.Log;
 import android.widget.TextView;
+
+import java.lang.reflect.Field;
+import java.lang.reflect.Modifier;
+import java.util.Iterator;
+import java.util.LinkedHashMap;
+import java.util.Map;
+import java.util.concurrent.ConcurrentHashMap;
 
 import io.github.bakwudo.uyu.extension.settings.Settings;
 
-import java.util.LinkedHashMap;
-import java.util.Map;
-import java.lang.reflect.Field;
-import java.util.concurrent.atomic.AtomicBoolean;
-
 public final class DeletedMessagesSupport {
     private static final String DIAGNOSTIC_TAG = "KizuDeletedStyle";
-    private static final AtomicBoolean ENTRY_TOAST_SHOWN = new AtomicBoolean(false);
-    private static final AtomicBoolean OUTCOME_TOAST_SHOWN = new AtomicBoolean(false);
-    // Leave headroom for roughly 10,000 messages arriving in a ten-minute rapid-chat window.
+    private static final String DELETED_MARKER = "<message deleted>";
     private static final int ORIGINAL_CACHE_LIMIT = 1_500;
     private static final long ORIGINAL_CACHE_TTL_MS = 5L * 60L * 1000L;
     private static final Object ORIGINAL_CACHE_LOCK = new Object();
     private static long lastOriginalCachePruneAt;
     private static final Map<String, CachedOriginal> ORIGINAL_MESSAGES =
-            new LinkedHashMap<String, CachedOriginal>(512, 0.75f, true) {
+            new LinkedHashMap<>(512, 0.75f, true) {
                 @Override
                 protected boolean removeEldestEntry(Map.Entry<String, CachedOriginal> eldest) {
                     return size() > ORIGINAL_CACHE_LIMIT;
                 }
             };
 
-    private static final Map<Class<?>, Field> MESSAGE_ID_FIELDS = new java.util.WeakHashMap<>();
-    private static final Map<Class<?>, Boolean> MISSING_MESSAGE_ID_FIELDS = new java.util.WeakHashMap<>();
+    private static final ConcurrentHashMap<Class<?>, Field> MESSAGE_ID_FIELDS = new ConcurrentHashMap<>();
+    private static final ConcurrentHashMap<Class<?>, Field> SPANNED_FIELDS = new ConcurrentHashMap<>();
+    private static final Field MISSING_FIELD;
+    private static final ColorMatrixColorFilter GRAY_FILTER;
+
+    static {
+        Field sentinel = null;
+        try {
+            sentinel = DeletedMessagesSupport.class.getDeclaredField("DIAGNOSTIC_TAG");
+        } catch (NoSuchFieldException ignored) {}
+        MISSING_FIELD = sentinel;
+
+        ColorMatrix matrix = new ColorMatrix();
+        matrix.setSaturation(0f);
+        GRAY_FILTER = new ColorMatrixColorFilter(matrix);
+    }
 
     private static final class CachedOriginal {
         final SpannedString text;
@@ -54,18 +69,11 @@ public final class DeletedMessagesSupport {
 
     /** Marker retained through EmoteSupport's text rebuild so later emotes inherit Gray mode. */
     public static final class DeletedStyleMarker {
-        private DeletedStyleMarker() { }
+        private DeletedStyleMarker() {}
     }
 
-    private DeletedMessagesSupport() {
-    }
+    private DeletedMessagesSupport() {}
 
-    /**
-     * Called from the existing chat-row bind hook after Twitch sets the row text. Keep a bounded
-     * copy of recent message rows so a later rapid-chat deletion can still show the original even
-     * when Twitch replaces the deleted span's original-message field with its placeholder.
-     * This method is deliberately failure-contained because it runs on Twitch's RecyclerView path.
-     */
     public static void onRowBound(Object messageModel, TextView textView) {
         if (textView == null) return;
         try {
@@ -98,11 +106,10 @@ public final class DeletedMessagesSupport {
             long now = SystemClock.uptimeMillis();
             synchronized (ORIGINAL_CACHE_LOCK) {
                 ORIGINAL_MESSAGES.put(messageId, new CachedOriginal(snapshot, now));
-                // Expired entries can otherwise occupy the LRU until enough new messages arrive.
                 if (ORIGINAL_MESSAGES.size() > 256
                         && now - lastOriginalCachePruneAt >= 60_000L) {
                     lastOriginalCachePruneAt = now;
-                    java.util.Iterator<Map.Entry<String, CachedOriginal>> iterator =
+                    Iterator<Map.Entry<String, CachedOriginal>> iterator =
                             ORIGINAL_MESSAGES.entrySet().iterator();
                     while (iterator.hasNext()) {
                         if (now - iterator.next().getValue().capturedAt > ORIGINAL_CACHE_TTL_MS) {
@@ -129,51 +136,91 @@ public final class DeletedMessagesSupport {
     }
 
     private static boolean containsDeletedPlaceholder(CharSequence text) {
-        final String marker = "<message deleted>";
-        String value = text.toString();
-        for (int start = 0; start + marker.length() <= value.length(); start++) {
-            if (value.regionMatches(true, start, marker, 0, marker.length())) return true;
+        int len = text == null ? 0 : text.length();
+        int mLen = DELETED_MARKER.length();
+        if (len < mLen) return false;
+        int first = TextUtils.indexOf(text, '<');
+        if (first < 0) return false;
+        int limit = len - mLen;
+        for (int start = first; start <= limit; start++) {
+            if (text.charAt(start) == '<' && regionMatchesIgnoreCase(text, start, DELETED_MARKER)) {
+                return true;
+            }
         }
         return false;
     }
 
+    private static boolean regionMatchesIgnoreCase(CharSequence text, int offset, String lowerTarget) {
+        int len = lowerTarget.length();
+        for (int i = 0; i < len; i++) {
+            char a = text.charAt(offset + i);
+            char b = lowerTarget.charAt(i);
+            if (a != b && Character.toLowerCase(a) != b) return false;
+        }
+        return true;
+    }
+
     private static String readMessageId(Object model) {
         if (model == null) return null;
-        Field field = null;
-        try {
-            Class<?> type = model.getClass();
-            synchronized (MESSAGE_ID_FIELDS) {
-                field = MESSAGE_ID_FIELDS.get(type);
-                if (field == null && !MISSING_MESSAGE_ID_FIELDS.containsKey(type)) {
-                    for (Class<?> current = type; current != null && current != Object.class;
-                         current = current.getSuperclass()) {
-                        try {
-                            field = current.getDeclaredField("messageId");
-                            field.setAccessible(true);
-                            MESSAGE_ID_FIELDS.put(type, field);
-                            break;
-                        } catch (NoSuchFieldException ignored) {
-                        }
-                    }
-                    if (field == null) MISSING_MESSAGE_ID_FIELDS.put(type, Boolean.TRUE);
-                }
-            }
-        } catch (Throwable ignored) {
-        }
-
-        if (field != null) {
+        Class<?> type = model.getClass();
+        Field cached = MESSAGE_ID_FIELDS.get(type);
+        if (cached != null && cached != MISSING_FIELD) {
             try {
-                Object value = field.get(model);
+                Object value = cached.get(model);
                 if (value != null) {
                     String id = String.valueOf(value);
                     if (!id.isEmpty()) return id;
                 }
-            } catch (Throwable ignored) {
-                // R8 may rename the backing field or deny reflective access; the data-class
-                // toString still includes the stable messageId label used by our fingerprint.
+            } catch (Throwable ignored) {}
+        }
+
+        if (cached == null) {
+            for (Class<?> current = type; current != null && current != Object.class;
+                 current = current.getSuperclass()) {
+                try {
+                    Field f = current.getDeclaredField("messageId");
+                    f.setAccessible(true);
+                    MESSAGE_ID_FIELDS.putIfAbsent(type, f);
+                    Object value = f.get(model);
+                    if (value != null) {
+                        String id = String.valueOf(value);
+                        if (!id.isEmpty()) return id;
+                    }
+                    break;
+                } catch (NoSuchFieldException ignored) {}
+                  catch (Throwable ignored) {}
             }
         }
-        return readMessageIdFromDataClassString(model);
+
+        String parsed = readMessageIdFromDataClassString(model);
+        if (cached == null && parsed != null) {
+            Field discovered = discoverStringFieldWithValue(type, model, parsed);
+            MESSAGE_ID_FIELDS.putIfAbsent(type, discovered != null ? discovered : MISSING_FIELD);
+        } else if (cached == null) {
+            MESSAGE_ID_FIELDS.putIfAbsent(type, MISSING_FIELD);
+        }
+        return parsed;
+    }
+
+    private static Field discoverStringFieldWithValue(Class<?> type, Object model, String expected) {
+        Field match = null;
+        for (Class<?> current = type; current != null && current != Object.class;
+             current = current.getSuperclass()) {
+            try {
+                for (Field field : current.getDeclaredFields()) {
+                    if (Modifier.isStatic(field.getModifiers()) || field.getType() != String.class) {
+                        continue;
+                    }
+                    field.setAccessible(true);
+                    Object val = field.get(model);
+                    if (expected.equals(val)) {
+                        if (match != null) return null; // Ambiguous, keep toString fallback.
+                        match = field;
+                    }
+                }
+            } catch (Throwable ignored) {}
+        }
+        return match;
     }
 
     private static String readMessageIdFromDataClassString(Object model) {
@@ -196,10 +243,6 @@ public final class DeletedMessagesSupport {
         }
     }
 
-    /**
-     * Styles the original message at Twitch's deleted-message factory boundary.
-     * Returning null leaves Twitch's native deleted-message handling untouched.
-     */
     public static boolean resolveAccess(boolean original) {
         try {
             if (!Settings.CHAT_DELETED_MESSAGES.get()) return original;
@@ -209,11 +252,6 @@ public final class DeletedMessagesSupport {
         }
     }
 
-    /**
-     * Mirrors PurpleTV's hook at ChatMessageSpanFactoryV2's deleted-message factory call:
-     * Mod falls through to Twitch's factory with moderator access, while the other modes
-     * style the original rich message and skip the factory's deleted placeholder.
-     */
     public static Spanned styleDeletedMessageFromFactory(Spanned message) {
         try {
             if (!Settings.CHAT_DELETED_MESSAGES.get() || message == null || message.length() == 0) {
@@ -255,20 +293,15 @@ public final class DeletedMessagesSupport {
     }
 
     public static boolean isGreyDeletedMessage(CharSequence text) {
-        if (!(text instanceof Spanned)) return false;
-        Spanned spanned = (Spanned) text;
+        if (!(text instanceof Spanned spanned)) return false;
         return spanned.getSpans(0, spanned.length(), DeletedStyleMarker.class).length > 0;
     }
 
-    /** Apply a per-drawable grayscale filter; unlike mutating the shared bitmap, this is row-local. */
     public static void applyGrayFilter(Drawable drawable) {
         if (drawable == null) return;
         try {
-            ColorMatrix matrix = new ColorMatrix();
-            matrix.setSaturation(0f);
-            drawable.setColorFilter(new ColorMatrixColorFilter(matrix));
-        } catch (Throwable ignored) {
-        }
+            drawable.setColorFilter(GRAY_FILTER);
+        } catch (Throwable ignored) {}
     }
 
     private static void grayInlineDrawables(Spanned text) {
@@ -277,23 +310,24 @@ public final class DeletedMessagesSupport {
                     0, text.length(), DynamicDrawableSpan.class)) {
                 applyGrayFilter(span.getDrawable());
             }
-        } catch (Throwable ignored) {
-        }
+        } catch (Throwable ignored) {}
     }
 
-    /** Restore the original rich-text body from Twitch's deleted-message span. */
     public static Spanned restoreDeletedMessageFromRow(Spanned message) {
         if (message == null || message.length() == 0) return null;
         try {
             if (!Settings.CHAT_DELETED_MESSAGES.get()) return null;
             for (ClickableSpan deletedSpan : message.getSpans(0, message.length(), ClickableSpan.class)) {
-                if (!hasSpannedStringField(deletedSpan)) continue;
+                Field spannedField = spannedFieldFor(deletedSpan);
+                if (spannedField == null) continue;
                 int start = message.getSpanStart(deletedSpan), end = message.getSpanEnd(deletedSpan);
                 if (start < 0 || end <= start || end > message.length()) continue;
-                SpannedString original = findOriginalMessage(deletedSpan);
-                if (original == null || original.length() == 0 || original.toString().toLowerCase(java.util.Locale.ROOT).contains("<message deleted>")) continue;
-                SpannedString body = stripDuplicateChatterHeader(SpannedString.valueOf(message), deletedSpan, start, original);
-                android.text.SpannableStringBuilder builder = new android.text.SpannableStringBuilder(message);
+                SpannedString original = readSpannedField(deletedSpan, spannedField);
+                if (original == null || original.length() == 0
+                        || containsDeletedPlaceholder(original)) continue;
+                SpannedString body = stripDuplicateChatterHeader(
+                        SpannedString.valueOf(message), deletedSpan, start, original);
+                SpannableStringBuilder builder = new SpannableStringBuilder(message);
                 builder.replace(start, end, body);
                 builder.removeSpan(deletedSpan);
                 applyDeletedStyle(builder, start, start + body.length());
@@ -303,6 +337,36 @@ public final class DeletedMessagesSupport {
             Log.w(DIAGNOSTIC_TAG, "could not restore original deleted chat message", failure);
         }
         return null;
+    }
+
+    private static Field spannedFieldFor(Object candidate) {
+        if (candidate == null) return null;
+        Class<?> type = candidate.getClass();
+        Field cached = SPANNED_FIELDS.get(type);
+        if (cached != null) return cached == MISSING_FIELD ? null : cached;
+
+        for (Class<?> current = type; current != null; current = current.getSuperclass()) {
+            try {
+                for (Field field : current.getDeclaredFields()) {
+                    if (field.getType() == SpannedString.class) {
+                        field.setAccessible(true);
+                        SPANNED_FIELDS.putIfAbsent(type, field);
+                        return field;
+                    }
+                }
+            } catch (Throwable ignored) {}
+        }
+        if (MISSING_FIELD != null) SPANNED_FIELDS.putIfAbsent(type, MISSING_FIELD);
+        return null;
+    }
+
+    private static SpannedString readSpannedField(ClickableSpan deletedSpan, Field field) {
+        try {
+            Object value = field.get(deletedSpan);
+            return value instanceof SpannedString ? (SpannedString) value : null;
+        } catch (Throwable ignored) {
+            return null;
+        }
     }
 
     private static int findMessageBodyStart(Spanned text) {
@@ -316,8 +380,7 @@ public final class DeletedMessagesSupport {
                 }
                 return end;
             }
-        } catch (Throwable ignored) {
-        }
+        } catch (Throwable ignored) {}
         return 0;
     }
 
@@ -358,37 +421,8 @@ public final class DeletedMessagesSupport {
             if ("strikethrough".equals(style) || "grey".equals(style) || "mod".equals(style)) {
                 return style;
             }
-        } catch (Throwable ignored) {
-        }
+        } catch (Throwable ignored) {}
         return "mod";
-    }
-
-    private static boolean hasSpannedStringField(Object candidate) {
-        try {
-            for (Class<?> type = candidate.getClass(); type != null; type = type.getSuperclass()) {
-                for (Field field : type.getDeclaredFields()) if (field.getType() == SpannedString.class) return true;
-            }
-        } catch (Throwable ignored) { }
-        return false;
-    }
-
-    private static SpannedString findOriginalMessage(ClickableSpan deletedSpan) {
-        try {
-            Class<?> type = deletedSpan.getClass();
-            while (type != null) {
-                for (java.lang.reflect.Field field : type.getDeclaredFields()) {
-                    if (field.getType() != SpannedString.class) continue;
-                    field.setAccessible(true);
-                    Object value = field.get(deletedSpan);
-                    if (value instanceof SpannedString) {
-                        return (SpannedString) value;
-                    }
-                }
-                type = type.getSuperclass();
-            }
-        } catch (Throwable ignored) {
-        }
-        return null;
     }
 
     private static SpannedString stripDuplicateChatterHeader(
@@ -419,9 +453,7 @@ public final class DeletedMessagesSupport {
                 }
             }
 
-            ClickableSpan[] spans =
-                    message.getSpans(lineStart, spanStart, ClickableSpan.class);
-
+            ClickableSpan[] spans = message.getSpans(lineStart, spanStart, ClickableSpan.class);
             ClickableSpan candidate = null;
             int candidateEnd = -1;
             for (ClickableSpan span : spans) {
@@ -461,8 +493,7 @@ public final class DeletedMessagesSupport {
                     return deletePrefix(original, tailPrefix.length());
                 }
             }
-        } catch (Throwable ignored) {
-        }
+        } catch (Throwable ignored) {}
 
         return original;
     }
@@ -474,4 +505,3 @@ public final class DeletedMessagesSupport {
         return SpannedString.valueOf(builder);
     }
 }
-

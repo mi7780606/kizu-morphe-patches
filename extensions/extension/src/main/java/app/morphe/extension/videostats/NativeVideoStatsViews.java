@@ -1,27 +1,40 @@
 package app.morphe.extension.videostats;
 
+import android.content.SharedPreferences;
 import android.util.Log;
 import android.view.View;
-import android.view.ViewTreeObserver;
+
 import java.lang.ref.WeakReference;
 import java.util.ArrayList;
 import java.util.Map;
 import java.util.WeakHashMap;
 
+import app.morphe.extension.Utils;
+import app.morphe.extension.settings.Setting;
+import app.morphe.extension.settings.Settings;
+
 /**
- * Keeps Kizu's custom Video Stats button and forwards its click to Twitch's built-in
- * video_debug_info_button. Twitch owns the native panel and live statistics model, so the
- * displayed metrics stay authoritative and follow the current playback session.
+ * Keeps Kizu's custom Video Stats button synchronized with the volume control's local layout
+ * (instead of a window-wide OnGlobalLayoutListener) and forwards clicks to Twitch's native
+ * video_debug_info_button.
  */
 public final class NativeVideoStatsViews {
     private static final String TAG = "KizuVideoStats";
     private static final String NATIVE_STATS_BUTTON = "video_debug_info_button";
     private static final Map<View, Binding> BINDINGS = new WeakHashMap<>();
+    private static boolean prefListenerRegistered;
+    private static final SharedPreferences.OnSharedPreferenceChangeListener PREF_LISTENER =
+            (prefs, key) -> {
+                if (key == null || Settings.SHOW_VIDEO_STATS_BUTTON.key.equals(key)) {
+                    refreshPreferences();
+                }
+            };
 
     private NativeVideoStatsViews() {}
 
     public static synchronized void install(View root, View button, View volume) {
         if (root == null || button == null || volume == null) return;
+        ensurePrefListener();
         Binding binding = BINDINGS.get(button);
         if (binding == null) {
             binding = new Binding(root, button, volume);
@@ -34,6 +47,12 @@ public final class NativeVideoStatsViews {
         }
     }
 
+    private static void ensurePrefListener() {
+        if (prefListenerRegistered) return;
+        prefListenerRegistered = true;
+        Setting.addChangeListener(PREF_LISTENER);
+    }
+
     public static synchronized void refreshPreferences() {
         for (Binding binding : new ArrayList<>(BINDINGS.values())) {
             if (binding != null) binding.refresh();
@@ -41,10 +60,13 @@ public final class NativeVideoStatsViews {
     }
 
     private static final class Binding implements View.OnClickListener,
-            View.OnAttachStateChangeListener, ViewTreeObserver.OnGlobalLayoutListener {
+            View.OnAttachStateChangeListener, View.OnLayoutChangeListener {
         private final WeakReference<View> root;
         private final WeakReference<View> button;
         private final WeakReference<View> volume;
+        private int lastVisibility = -1;
+        private boolean lastEnabled;
+        private boolean listenersAttached;
 
         Binding(View root, View button, View volume) {
             this.root = new WeakReference<>(root);
@@ -56,11 +78,17 @@ public final class NativeVideoStatsViews {
             View target = button.get();
             View original = volume.get();
             if (target == null || original == null) return;
-            boolean show = VideoStatsRuntime.enabled()
-                    && original.getVisibility() == View.VISIBLE;
+            boolean show = VideoStatsRuntime.enabled() && original.getVisibility() == View.VISIBLE;
             int next = show ? View.VISIBLE : View.GONE;
-            if (target.getVisibility() != next) target.setVisibility(next);
-            target.setEnabled(show && original.isEnabled());
+            boolean enabled = show && original.isEnabled();
+            if (lastVisibility != next || target.getVisibility() != next) {
+                lastVisibility = next;
+                target.setVisibility(next);
+            }
+            if (lastEnabled != enabled || target.isEnabled() != enabled) {
+                lastEnabled = enabled;
+                target.setEnabled(enabled);
+            }
         }
 
         @Override public void onClick(View view) {
@@ -72,15 +100,12 @@ public final class NativeVideoStatsViews {
                 return;
             }
 
-            int id = base.getResources().getIdentifier(
-                    NATIVE_STATS_BUTTON, "id", base.getContext().getPackageName());
+            int id = Utils.getResourceId(base.getContext(), NATIVE_STATS_BUTTON, "id");
             if (id == 0) {
                 Log.w(TAG, "Twitch's native video stats button resource was not found.");
                 return;
             }
 
-            // Prefer the same live player-control subtree; the decor-root fallback handles
-            // variants where the detached delegate root is not the inflated overlay itself.
             View nativeButton = base.findViewById(id);
             if (nativeButton == null) {
                 View tree = base.getRootView();
@@ -91,9 +116,6 @@ public final class NativeVideoStatsViews {
                 return;
             }
 
-            // The built-in control is normally GONE in production Twitch. performClick invokes
-            // its existing presenter event without showing a duplicate info icon; Twitch then
-            // renders its own in-player panel and supplies its real, live metrics.
             if (!nativeButton.performClick()) {
                 Log.w(TAG, "Twitch's native video stats click handler was not ready.");
             } else {
@@ -101,22 +123,35 @@ public final class NativeVideoStatsViews {
             }
         }
 
-        @Override public void onGlobalLayout() { refresh(); }
+        @Override
+        public void onLayoutChange(View v, int l, int t, int r, int b, int ol, int ot, int or, int ob) {
+            refresh();
+        }
 
         @Override public void onViewAttachedToWindow(View view) {
-            View current = root.get();
-            if (current != null) {
-                ViewTreeObserver observer = current.getViewTreeObserver();
-                if (observer.isAlive()) observer.addOnGlobalLayoutListener(this);
+            if (!listenersAttached) {
+                listenersAttached = true;
+                View original = volume.get();
+                if (original != null) {
+                    original.addOnLayoutChangeListener(this);
+                    if (original.getParent() instanceof View parent) {
+                        parent.addOnLayoutChangeListener(this);
+                    }
+                }
             }
             refresh();
         }
 
         @Override public void onViewDetachedFromWindow(View view) {
-            View current = root.get();
-            if (current != null) {
-                ViewTreeObserver observer = current.getViewTreeObserver();
-                if (observer.isAlive()) observer.removeOnGlobalLayoutListener(this);
+            if (listenersAttached) {
+                listenersAttached = false;
+                View original = volume.get();
+                if (original != null) {
+                    original.removeOnLayoutChangeListener(this);
+                    if (original.getParent() instanceof View parent) {
+                        parent.removeOnLayoutChangeListener(this);
+                    }
+                }
             }
         }
     }

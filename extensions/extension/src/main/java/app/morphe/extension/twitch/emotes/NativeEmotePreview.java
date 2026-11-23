@@ -14,12 +14,22 @@ import android.widget.ImageView;
 import android.widget.TextView;
 
 /** Displays third-party emotes in Twitch's own emote-card bottom-sheet layout. */
-final class NativeEmotePreview {
+public final class NativeEmotePreview {
     private Dialog active;
 
     // These methods are replaced by the Twitch 31.3.1 bytecode patch.
     private static Dialog createDialog(Context context) { return null; }
     private static int[] resourceIds() { return new int[0]; }
+
+    /** Exposes Twitch's patched BottomSheetDialog factory to other Kizu native-UI surfaces. */
+    public static Dialog createBottomSheetDialog(Context context) {
+        if (context == null) return null;
+        try {
+            return createDialog(context);
+        } catch (Throwable ignored) {
+            return null;
+        }
+    }
 
     void open(TextView source, Emote emote, Drawable drawable) {
         Activity activity = activity(source.getContext());
@@ -120,4 +130,3 @@ final class NativeEmotePreview {
         return false;
     }
 }
-

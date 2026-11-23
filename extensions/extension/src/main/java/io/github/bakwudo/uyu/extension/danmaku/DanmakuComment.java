@@ -1,5 +1,7 @@
 package io.github.bakwudo.uyu.extension.danmaku;
 
+import android.graphics.Bitmap;
+
 /**
  * One chat message to scroll across the video: text and Twitch emotes, in order.
  */
@@ -7,6 +9,8 @@ public final class DanmakuComment {
     /** A Twitch emote, drawn as an image one line high. */
     public static final class Emote {
         public final String id;
+        int cachedTier = -1;
+        String cachedKey;
 
         public Emote(String id) {
             this.id = id;
@@ -22,11 +26,16 @@ public final class DanmakuComment {
     int row;
     /** Time on the view's clock when the comment entered at the right edge. */
     long start;
+    int measuredGen;
+
+    // Cached pre-rendered sprite bitmap (managed by DanmakuView).
+    Bitmap sprite;
+    int spriteGen;
+    int spriteBytes;
+    boolean spriteComplete;
 
     // Kizu: 待機列用
-    /** これより前には流さない時刻 (uptime) */
     long due;
-    /** 待機列に入った時刻 (uptime) */
     long queuedAt;
 
     public DanmakuComment(Object[] parts) {

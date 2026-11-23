@@ -1,38 +1,49 @@
 package app.morphe.extension.reload;
 
+import android.content.SharedPreferences;
 import android.util.Log;
 import android.view.View;
 import android.view.ViewGroup;
-import android.view.ViewTreeObserver;
+
 import java.lang.ref.WeakReference;
 import java.util.WeakHashMap;
+
+import app.morphe.extension.Utils;
+import app.morphe.extension.settings.Setting;
+import app.morphe.extension.settings.Settings;
 import app.morphe.extension.videostats.NativeVideoStatsViews;
 
 public final class NativeReloadViews {
     private static final String TAG = "twitchpatches_reload_button";
+    private static final String STATS_TAG = "twitchpatches_video_stats_button";
     private static final String LOG_TAG = "KizuReload";
     private static final WeakHashMap<View, Binding> bindings = new WeakHashMap<>();
+    private static boolean prefListenerRegistered;
+    private static final SharedPreferences.OnSharedPreferenceChangeListener PREF_LISTENER =
+            (prefs, key) -> {
+                if (key == null || Settings.SHOW_REFRESH_BUTTON.key.equals(key)) {
+                    refreshPreferences();
+                }
+            };
 
     private NativeReloadViews() {}
 
     public static synchronized void install(View root, Object owner, boolean live, int volumeId) {
         if (root == null || !live || !(owner instanceof NativeReloadOwner)) return;
+        ensurePrefListener();
 
         View volume = root.findViewById(volumeId);
         ViewGroup parent = volume != null && volume.getParent() instanceof ViewGroup
                 ? (ViewGroup) volume.getParent() : null;
-        int id = root.getResources().getIdentifier(TAG, "id", root.getContext().getPackageName());
+        int id = Utils.getResourceId(root.getContext(), TAG, "id");
         View button = parent == null || id == 0 ? null : parent.findViewById(id);
 
-        int statsId = root.getResources().getIdentifier(
-                "twitchpatches_video_stats_button", "id", root.getContext().getPackageName());
+        int statsId = Utils.getResourceId(root.getContext(), STATS_TAG, "id");
         View statsButton = parent == null || statsId == 0 ? null : parent.findViewById(statsId);
         if (statsButton != null && volume != null) {
             NativeVideoStatsViews.install(root, statsButton, volume);
         }
 
-        Log.i(LOG_TAG, "reload view install: root=" + (root != null)
-                + " volume=" + (volume != null) + " button=" + (button != null));
         if (button == null || volume == null) return;
 
         Binding binding = bindings.get(button);
@@ -48,6 +59,12 @@ public final class NativeReloadViews {
         }
     }
 
+    private static void ensurePrefListener() {
+        if (prefListenerRegistered) return;
+        prefListenerRegistered = true;
+        Setting.addChangeListener(PREF_LISTENER);
+    }
+
     public static synchronized void refreshPreferences() {
         for (Binding binding : bindings.values()) {
             if (binding != null) binding.refresh();
@@ -55,17 +72,16 @@ public final class NativeReloadViews {
     }
 
     private static final class Binding implements View.OnClickListener,
-            View.OnAttachStateChangeListener, ViewTreeObserver.OnGlobalLayoutListener {
-        private final WeakReference<View> root;
+            View.OnAttachStateChangeListener, View.OnLayoutChangeListener {
         private final WeakReference<View> button;
         private final WeakReference<View> volume;
-        // NativeReloadAction keeps its host weakly; retain this small adapter for the binding's lifetime.
-        // ViewReloadHost itself only holds weak references to the view and owner, so this does not pin them.
         private final NativeReloadHost host;
         private final NativeReloadAction action;
+        private int lastVisibility = -1;
+        private boolean lastEnabled;
+        private boolean listenersAttached;
 
         Binding(View root, View button, View volume, NativeReloadOwner owner) {
-            this.root = new WeakReference<>(root);
             this.button = new WeakReference<>(button);
             this.volume = new WeakReference<>(volume);
             this.host = new ViewReloadHost(root, owner);
@@ -77,8 +93,15 @@ public final class NativeReloadViews {
             View original = volume.get();
             if (target == null || original == null) return;
             int visibility = ReloadRuntime.enabled() ? original.getVisibility() : View.GONE;
-            if (target.getVisibility() != visibility) target.setVisibility(visibility);
-            target.setEnabled(original.isEnabled() && action.available());
+            boolean enabled = visibility == View.VISIBLE && original.isEnabled() && action.available();
+            if (lastVisibility != visibility || target.getVisibility() != visibility) {
+                lastVisibility = visibility;
+                target.setVisibility(visibility);
+            }
+            if (lastEnabled != enabled || target.isEnabled() != enabled) {
+                lastEnabled = enabled;
+                target.setEnabled(enabled);
+            }
         }
 
         @Override public void onClick(View view) {
@@ -88,22 +111,35 @@ public final class NativeReloadViews {
             }
         }
 
-        @Override public void onGlobalLayout() { refresh(); }
+        @Override
+        public void onLayoutChange(View v, int l, int t, int r, int b, int ol, int ot, int or, int ob) {
+            refresh();
+        }
 
         @Override public void onViewAttachedToWindow(View view) {
-            View current = root.get();
-            if (current != null) {
-                ViewTreeObserver observer = current.getViewTreeObserver();
-                if (observer.isAlive()) observer.addOnGlobalLayoutListener(this);
+            if (!listenersAttached) {
+                listenersAttached = true;
+                View original = volume.get();
+                if (original != null) {
+                    original.addOnLayoutChangeListener(this);
+                    if (original.getParent() instanceof View parent) {
+                        parent.addOnLayoutChangeListener(this);
+                    }
+                }
             }
             refresh();
         }
 
         @Override public void onViewDetachedFromWindow(View view) {
-            View current = root.get();
-            if (current != null) {
-                ViewTreeObserver observer = current.getViewTreeObserver();
-                if (observer.isAlive()) observer.removeOnGlobalLayoutListener(this);
+            if (listenersAttached) {
+                listenersAttached = false;
+                View original = volume.get();
+                if (original != null) {
+                    original.removeOnLayoutChangeListener(this);
+                    if (original.getParent() instanceof View parent) {
+                        parent.removeOnLayoutChangeListener(this);
+                    }
+                }
             }
         }
     }
