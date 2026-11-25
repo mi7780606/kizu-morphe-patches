@@ -193,7 +193,7 @@ public final class BottomCreateButtonHider {
             if (id == 0) continue;
             View target = root.findViewById(id);
             if (target != null) {
-                HiddenView.attach(target, v -> Settings.HIDE_CREATE_BUTTON.get(), true);
+                HiddenView.attach(target, v -> Settings.HIDE_CREATE_BUTTON.get(), true, View.INVISIBLE);
             }
         }
         scanHeuristicCreateIds(root, 0);
@@ -202,7 +202,7 @@ public final class BottomCreateButtonHider {
     private static void scanHeuristicCreateIds(View view, int depth) {
         if (view == null || depth > 24) return;
         if (isHeuristicCreateId(view)) {
-            HiddenView.attach(view, v -> Settings.HIDE_CREATE_BUTTON.get(), true);
+            HiddenView.attach(view, v -> Settings.HIDE_CREATE_BUTTON.get(), true, View.INVISIBLE);
         }
         if (view instanceof ViewGroup group) {
             for (int i = 0; i < group.getChildCount(); i++) {
@@ -268,7 +268,7 @@ public final class BottomCreateButtonHider {
                     if (cx <= leftRect.left || cx >= rightRect.right) continue;
                     if (hasAnyNavLabelText(child)) continue;
 
-                    HiddenView.attach(child, v -> Settings.HIDE_CREATE_BUTTON.get(), true);
+                    HiddenView.attach(child, v -> Settings.HIDE_CREATE_BUTTON.get(), true, View.INVISIBLE);
                     Log.i(TAG, "Bound bottom create button via LCA: " + describeView(child));
                     return child;
                 }
@@ -446,7 +446,7 @@ public final class BottomCreateButtonHider {
                 continue;
             }
             if (isHeuristicCreateId(child) || hasCreateLabel(child)) {
-                HiddenView.attach(child, v -> Settings.HIDE_CREATE_BUTTON.get(), true);
+                HiddenView.attach(child, v -> Settings.HIDE_CREATE_BUTTON.get(), true, View.INVISIBLE);
                 Log.i(TAG, "Bound bottom create button via row label/id: " + describeView(child));
                 return child;
             }
@@ -463,7 +463,7 @@ public final class BottomCreateButtonHider {
                 if (!hasVisibleText(center)
                         && (hasVisibleText(left) || hasClickableDescendant(left))
                         && (hasVisibleText(right) || hasClickableDescendant(right))) {
-                    HiddenView.attach(center, v -> Settings.HIDE_CREATE_BUTTON.get(), true);
+                    HiddenView.attach(center, v -> Settings.HIDE_CREATE_BUTTON.get(), true, View.INVISIBLE);
                     Log.i(TAG, "Bound bottom create button via center slot: " + describeView(center));
                     return center;
                 }
