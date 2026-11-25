@@ -45,6 +45,7 @@ public final class KizuHooks {
             if (input != null) {
                 EmoteAutocomplete.attachDirectly(input);
             }
+            LandscapeChatInputHider.bindFromDelegate(delegate, input);
         } catch (Throwable t) {
             Log.e(TAG, "chat input hook failed", t);
         }

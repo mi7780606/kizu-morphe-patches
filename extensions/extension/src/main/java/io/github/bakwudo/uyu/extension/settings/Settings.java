@@ -108,6 +108,8 @@ public final class Settings {
             new BooleanSetting("landscape_chat_opacity_enabled", true);
     public static final IntSetting LANDSCAPE_CHAT_OPACITY =
             new IntSetting("landscape_chat_opacity", 30, 0, 100);
+    public static final BooleanSetting HIDE_LANDSCAPE_CHAT_INPUT =
+            new BooleanSetting("hide_landscape_chat_input", true);
 
     // Player.
     public static final BooleanSetting SHOW_REFRESH_BUTTON =

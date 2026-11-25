@@ -14,6 +14,8 @@ import java.lang.ref.WeakReference;
 import java.util.Locale;
 import java.util.WeakHashMap;
 
+import app.morphe.extension.appearance.HiddenView;
+import app.morphe.extension.appearance.LandscapeChatInputHider;
 import io.github.bakwudo.uyu.extension.Utils;
 import io.github.bakwudo.uyu.extension.settings.Settings;
 
@@ -39,9 +41,11 @@ public final class LandscapeChatPatch {
     /** Apply the landscape chat controls after Twitch has finished building the theatre view. */
     public static void onActivityStarted(Activity activity) {
         if (activity == null) return;
+        HiddenView.recheckAll();
         boolean sizeOn = Settings.LANDSCAPE_CHAT_SIZE_ENABLED.get();
         boolean opacityOn = Settings.LANDSCAPE_CHAT_OPACITY_ENABLED.get();
-        if (!sizeOn && !opacityOn) {
+        boolean hideInput = Settings.HIDE_LANDSCAPE_CHAT_INPUT.get();
+        if (!sizeOn && !opacityOn && !hideInput) {
             restoreLandscapeControls();
             return;
         }
@@ -86,13 +90,19 @@ public final class LandscapeChatPatch {
                 == Configuration.ORIENTATION_LANDSCAPE;
         boolean sizeOn = Settings.LANDSCAPE_CHAT_SIZE_ENABLED.get();
         boolean opacityOn = Settings.LANDSCAPE_CHAT_OPACITY_ENABLED.get();
-        if (!landscape || (!sizeOn && !opacityOn)) {
+        boolean hideInput = Settings.HIDE_LANDSCAPE_CHAT_INPUT.get();
+        if (!landscape || (!sizeOn && !opacityOn && !hideInput)) {
             restoreLandscapeControls();
-            return !landscape || (!sizeOn && !opacityOn);
+            HiddenView.recheckAll();
+            return !landscape || (!sizeOn && !opacityOn && !hideInput);
         }
         View chat = findChatPanel(root);
         if (chat == null) return false;
-        applyToChatView(root, chat, sizeOn, opacityOn);
+        if (sizeOn || opacityOn) applyToChatView(root, chat, sizeOn, opacityOn);
+        if (hideInput) {
+            LandscapeChatInputHider.bindInChatPanel(chat);
+            HiddenView.recheckAll();
+        }
         return true;
     }
 
@@ -240,6 +250,7 @@ public final class LandscapeChatPatch {
                     == Configuration.ORIENTATION_LANDSCAPE;
             if (!landscape) {
                 restoreLandscapeControls();
+                HiddenView.recheckAll();
                 return;
             }
             if (Settings.DANMAKU_HIDE_LANDSCAPE_CHAT.get()) {
@@ -248,11 +259,19 @@ public final class LandscapeChatPatch {
             }
             boolean sizeOn = Settings.LANDSCAPE_CHAT_SIZE_ENABLED.get();
             boolean opacityOn = Settings.LANDSCAPE_CHAT_OPACITY_ENABLED.get();
-            if (sizeOn || opacityOn) {
+            boolean hideInput = Settings.HIDE_LANDSCAPE_CHAT_INPUT.get();
+            HiddenView.recheckAll();
+            if (sizeOn || opacityOn || hideInput) {
                 View decor = root.getRootView();
                 if (decor != null) {
                     View chat = findChatPanel(decor);
-                    if (chat != null) applyToChatView(decor, chat, sizeOn, opacityOn);
+                    if (chat != null) {
+                        if (sizeOn || opacityOn) applyToChatView(decor, chat, sizeOn, opacityOn);
+                        if (hideInput) {
+                            LandscapeChatInputHider.bindInChatPanel(chat);
+                            HiddenView.recheckAll();
+                        }
+                    }
                 }
             }
         } catch (Exception ex) {

@@ -16,8 +16,8 @@ import app.morphe.extension.settings.Setting;
  * Hides a target view based on a setting condition, attaching its PreDraw guard ONLY while
  * hiding is active and automatically re-evaluating immediately when any preference changes.
  */
-final class HiddenView implements ViewTreeObserver.OnPreDrawListener, View.OnAttachStateChangeListener {
-    interface Condition {
+public final class HiddenView implements ViewTreeObserver.OnPreDrawListener, View.OnAttachStateChangeListener {
+    public interface Condition {
         boolean shouldHide(View view);
     }
 
@@ -64,7 +64,7 @@ final class HiddenView implements ViewTreeObserver.OnPreDrawListener, View.OnAtt
         this.restore = restore;
     }
 
-    static void attach(View view, Condition condition, boolean restore) {
+    public static void attach(View view, Condition condition, boolean restore) {
         if (view == null || condition == null) return;
         ensurePrefListener();
         HiddenView existing;
@@ -83,6 +83,30 @@ final class HiddenView implements ViewTreeObserver.OnPreDrawListener, View.OnAtt
             existing.onViewAttachedToWindow(view);
         } else {
             existing.update();
+        }
+    }
+
+    /** Re-evaluates all tracked HiddenView instances immediately (or posts onto the main thread). */
+    public static void recheckAll() {
+        if (Looper.myLooper() == Looper.getMainLooper()) {
+            RECHECK_ALL.run();
+        } else {
+            MAIN.post(RECHECK_ALL);
+        }
+    }
+
+    /** Re-evaluates a single tracked view if registered. */
+    public static void recheck(View view) {
+        if (view == null) return;
+        final HiddenView existing;
+        synchronized (INSTANCES) {
+            existing = INSTANCES.get(view);
+        }
+        if (existing == null) return;
+        if (Looper.myLooper() == Looper.getMainLooper()) {
+            existing.update();
+        } else {
+            MAIN.post(existing::update);
         }
     }
 

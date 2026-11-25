@@ -12,6 +12,7 @@ import android.view.View;
 import java.util.WeakHashMap;
 
 import app.morphe.extension.appearance.BottomCreateButtonHider;
+import app.morphe.extension.appearance.HiddenView;
 import app.morphe.extension.appearance.HypeTrainHider;
 import app.morphe.extension.appearance.KizuUiTweaks;
 import app.morphe.extension.channelpoints.ChannelPoints;
@@ -48,6 +49,8 @@ public final class Utils {
                 @Override public void onActivityResumed(Activity activity) {
                     currentActivity = activity;
                     SettingsUi.invalidateThemeCache();
+                    try { BottomCreateButtonHider.onActivityResumed(activity); } catch (Throwable ignored) {}
+                    try { HiddenView.recheckAll(); } catch (Throwable ignored) {}
                 }
                 @Override public void onActivityPaused(Activity activity) {}
                 @Override public void onActivityStopped(Activity activity) {

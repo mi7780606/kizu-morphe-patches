@@ -239,6 +239,7 @@ public final class HidePromotionsPatch {
                 View msgInput = root.findViewById(msgInputId);
                 if (msgInput != null) EmoteAutocomplete.attachDirectly(msgInput);
             }
+            LandscapeChatInputHider.bindInViewTree(root);
             BottomCreateButtonHider.bindInTree(root);
 
             for (Target target : TARGETS) {

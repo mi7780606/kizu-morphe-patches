@@ -374,6 +374,8 @@ public class UyuSettingsFragment extends PreferenceFragment {
         addSwitch(screen, Settings.LANDSCAPE_CHAT_OPACITY_ENABLED, "横画面チャットの背景透明度を変更",
                 "横画面オーバーレイチャットの透明度をカスタム設定に合わせます。");
         addSlider(screen, Settings.LANDSCAPE_CHAT_OPACITY, 5, "横画面チャットの透明度", value -> value + "%");
+        addSwitch(screen, Settings.HIDE_LANDSCAPE_CHAT_INPUT, "全画面チャットで入力欄を非表示",
+                "横画面（全画面）でコメント欄を表示している間、コメント入力欄を隠してコメント一覧を広く表示します。");
     }
 
     private static int deletedMessageStyleIndex(String value) {
