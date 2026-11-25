@@ -175,6 +175,8 @@ public final class Settings {
             new BooleanSetting("show_sleep_timer", true);
 
     // Interface / Feed.
+    public static final BooleanSetting HIDE_CREATE_BUTTON =
+            new BooleanSetting("hide_create_button", true);
     public static final BooleanSetting HIDE_STORIES =
             new BooleanSetting("hide_stories", true);
     public static final BooleanSetting HIDE_RECOMMENDATIONS =

@@ -43,7 +43,7 @@ public final class SecretTextPreference extends Preference {
                     String value = text.getText().toString().trim();
                     if (!value.isEmpty()) setValue(value);
                 },
-                "Clear",
+                "クリア",
                 () -> setValue(""),
                 context.getString(android.R.string.cancel));
     }

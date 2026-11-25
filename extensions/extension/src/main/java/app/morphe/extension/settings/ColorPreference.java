@@ -125,12 +125,12 @@ public final class ColorPreference extends Preference {
                 .setView(layout)
                 .setPositiveButton(android.R.string.ok, null)
                 .setNegativeButton(android.R.string.cancel, null)
-                .setNeutralButton("Default", (d, which) -> setValue(setting.defaultValue))
+                .setNeutralButton("デフォルト", (d, which) -> setValue(setting.defaultValue))
                 .create();
         dialog.setOnShowListener(d -> dialog.getButton(AlertDialog.BUTTON_POSITIVE).setOnClickListener(v -> {
             Integer color = parse(hex.getText().toString());
             if (color == null) {
-                Toast.makeText(context, "Enter a color as #AARRGGBB", Toast.LENGTH_SHORT).show();
+                Toast.makeText(context, "#AARRGGBB の形式で色を入力してください", Toast.LENGTH_SHORT).show();
                 return;
             }
             setValue(color);

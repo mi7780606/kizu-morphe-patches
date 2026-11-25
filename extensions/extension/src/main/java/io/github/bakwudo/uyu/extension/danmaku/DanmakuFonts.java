@@ -43,10 +43,10 @@ public final class DanmakuFonts {
     private static final String IMPORT_DIR = "uyu_fonts";
 
     private static final String[][] FAMILIES = {
-            {"", "System default"},
-            {"sans-serif", "Sans serif"},
-            {"serif", "Serif"},
-            {"monospace", "Monospace"},
+            {"", "システム標準"},
+            {"sans-serif", "ゴシック体（Sans serif）"},
+            {"serif", "明朝体（Serif）"},
+            {"monospace", "等幅（Monospace）"},
     };
 
     public static final class Choice {
@@ -189,7 +189,7 @@ public final class DanmakuFonts {
             files.sort((a, b) -> a.getName().compareToIgnoreCase(b.getName()));
             for (File file : files) {
                 choices.add(new Choice(FILE_PREFIX + file.getAbsolutePath() + "#0",
-                        "Imported: " + stripExtension(file.getName())));
+                        "読み込み済み: " + stripExtension(file.getName())));
             }
         }
 

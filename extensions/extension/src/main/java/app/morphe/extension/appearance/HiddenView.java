@@ -53,7 +53,9 @@ final class HiddenView implements ViewTreeObserver.OnPreDrawListener, View.OnAtt
     private final Condition condition;
     private final boolean restore;
     private boolean hiddenByUs;
+    private boolean enforceQueued;
     private int visibilityBeforeHide = View.VISIBLE;
+    private float alphaBeforeHide = 1f;
     private ViewTreeObserver observer;
 
     private HiddenView(View view, Condition condition, boolean restore) {
@@ -65,18 +67,36 @@ final class HiddenView implements ViewTreeObserver.OnPreDrawListener, View.OnAtt
     static void attach(View view, Condition condition, boolean restore) {
         if (view == null || condition == null) return;
         ensurePrefListener();
-        HiddenView hiddenView;
+        HiddenView existing;
         synchronized (INSTANCES) {
-            if (INSTANCES.containsKey(view)) return;
-            hiddenView = new HiddenView(view, condition, restore);
-            INSTANCES.put(view, hiddenView);
+            existing = INSTANCES.get(view);
+            if (existing == null) {
+                existing = new HiddenView(view, condition, restore);
+                INSTANCES.put(view, existing);
+            } else {
+                existing.scheduleEnforce();
+                return;
+            }
         }
-        view.addOnAttachStateChangeListener(hiddenView);
+        view.addOnAttachStateChangeListener(existing);
         if (view.isAttachedToWindow()) {
-            hiddenView.onViewAttachedToWindow(view);
+            existing.onViewAttachedToWindow(view);
         } else {
-            hiddenView.update();
+            existing.update();
         }
+    }
+
+    private void scheduleEnforce() {
+        if (!condition.shouldHide(view)) {
+            update();
+            return;
+        }
+        if (enforceQueued) return;
+        enforceQueued = true;
+        MAIN.postAtFrontOfQueue(() -> {
+            enforceQueued = false;
+            update();
+        });
     }
 
     private static void ensurePrefListener() {
@@ -126,20 +146,35 @@ final class HiddenView implements ViewTreeObserver.OnPreDrawListener, View.OnAtt
     private boolean update() {
         if (condition.shouldHide(view)) {
             attachObserver();
-            if (view.getVisibility() == View.GONE) return false;
-            visibilityBeforeHide = view.getVisibility();
-            view.setVisibility(View.GONE);
+            boolean changed = false;
+            if (!hiddenByUs) {
+                visibilityBeforeHide = view.getVisibility();
+                alphaBeforeHide = view.getAlpha();
+            }
+            if (view.getAlpha() != 0f) {
+                view.setAlpha(0f);
+                changed = true;
+            }
+            if (view.getVisibility() != View.GONE) {
+                view.setVisibility(View.GONE);
+                changed = true;
+            }
             hiddenByUs = true;
-            return true;
+            return changed;
         }
         detachObserver();
         if (!hiddenByUs) return false;
-        if (!restore || view.getVisibility() != View.GONE) {
-            hiddenByUs = false;
-            return false;
-        }
-        view.setVisibility(visibilityBeforeHide);
         hiddenByUs = false;
-        return true;
+        if (!restore) return false;
+        boolean changed = false;
+        if (view.getAlpha() != alphaBeforeHide) {
+            view.setAlpha(alphaBeforeHide);
+            changed = true;
+        }
+        if (view.getVisibility() == View.GONE && view.getVisibility() != visibilityBeforeHide) {
+            view.setVisibility(visibilityBeforeHide);
+            changed = true;
+        }
+        return changed;
     }
 }

@@ -11,6 +11,7 @@ import android.view.View;
 
 import java.util.WeakHashMap;
 
+import app.morphe.extension.appearance.BottomCreateButtonHider;
 import app.morphe.extension.appearance.HypeTrainHider;
 import app.morphe.extension.appearance.KizuUiTweaks;
 import app.morphe.extension.channelpoints.ChannelPoints;
@@ -42,6 +43,7 @@ public final class Utils {
                     try { LandscapeChatPatch.onActivityStarted(activity); } catch (Throwable ignored) {}
                     try { HypeTrainHider.onActivityStarted(activity); } catch (Throwable ignored) {}
                     try { KizuUiTweaks.onActivityStarted(activity); } catch (Throwable ignored) {}
+                    try { BottomCreateButtonHider.onActivityStarted(activity); } catch (Throwable ignored) {}
                 }
                 @Override public void onActivityResumed(Activity activity) {
                     currentActivity = activity;

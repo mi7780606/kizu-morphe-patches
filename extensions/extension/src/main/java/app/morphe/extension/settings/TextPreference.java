@@ -57,7 +57,7 @@ public final class TextPreference extends Preference {
                 layout,
                 context.getString(android.R.string.ok),
                 () -> setValue(text.getText().toString().trim()),
-                "Clear",
+                "クリア",
                 () -> setValue(""),
                 context.getString(android.R.string.cancel));
     }

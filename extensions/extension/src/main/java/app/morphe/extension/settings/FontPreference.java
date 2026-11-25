@@ -52,7 +52,7 @@ public final class FontPreference extends Preference {
             labels[i] = choices.get(i).label;
             if (choices.get(i).value.equals(current)) checked = i;
         }
-        labels[choices.size()] = "Import a font file (TTF / OTF)…";
+        labels[choices.size()] = "フォントファイルを読み込む（TTF / OTF）…";
 
         SettingsUi.dialog(context)
                 .setTitle(getTitle())
@@ -78,7 +78,7 @@ public final class FontPreference extends Preference {
             fragment.startActivityForResult(intent, REQUEST_IMPORT_FONT);
         } catch (Exception ex) {
             Utils.logError("Failed to open the file picker", ex);
-            Toast.makeText(getContext(), "No file picker available", Toast.LENGTH_SHORT).show();
+            Toast.makeText(getContext(), "ファイル選択画面を開けませんでした", Toast.LENGTH_SHORT).show();
         }
     }
 
@@ -100,7 +100,7 @@ public final class FontPreference extends Preference {
             String imported = value;
             new Handler(Looper.getMainLooper()).post(() -> {
                 if (imported == null) {
-                    Toast.makeText(context, "Not a font file Android can use", Toast.LENGTH_SHORT).show();
+                    Toast.makeText(context, "この端末で使用できないフォントファイルです", Toast.LENGTH_SHORT).show();
                 } else if (fragment.isAdded()) {
                     setValue(imported);
                 } else {

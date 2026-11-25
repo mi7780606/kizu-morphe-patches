@@ -4,6 +4,7 @@ import android.content.SharedPreferences;
 import android.util.Log;
 import android.view.View;
 import android.view.ViewGroup;
+import android.view.ViewTreeObserver;
 
 import java.lang.ref.WeakReference;
 import java.util.WeakHashMap;
@@ -72,14 +73,16 @@ public final class NativeReloadViews {
     }
 
     private static final class Binding implements View.OnClickListener,
-            View.OnAttachStateChangeListener, View.OnLayoutChangeListener {
+            View.OnAttachStateChangeListener, View.OnLayoutChangeListener, ViewTreeObserver.OnPreDrawListener {
         private final WeakReference<View> button;
         private final WeakReference<View> volume;
         private final NativeReloadHost host;
         private final NativeReloadAction action;
         private int lastVisibility = -1;
+        private float lastAlpha = -1f;
         private boolean lastEnabled;
         private boolean listenersAttached;
+        private ViewTreeObserver observer;
 
         Binding(View root, View button, View volume, NativeReloadOwner owner) {
             this.button = new WeakReference<>(button);
@@ -93,15 +96,32 @@ public final class NativeReloadViews {
             View original = volume.get();
             if (target == null || original == null) return;
             int visibility = ReloadRuntime.enabled() ? original.getVisibility() : View.GONE;
+            float alpha = original.getAlpha();
             boolean enabled = visibility == View.VISIBLE && original.isEnabled() && action.available();
             if (lastVisibility != visibility || target.getVisibility() != visibility) {
                 lastVisibility = visibility;
                 target.setVisibility(visibility);
             }
+            if (lastAlpha != alpha || target.getAlpha() != alpha) {
+                lastAlpha = alpha;
+                target.setAlpha(alpha);
+            }
             if (lastEnabled != enabled || target.isEnabled() != enabled) {
                 lastEnabled = enabled;
                 target.setEnabled(enabled);
             }
+        }
+
+        @Override public boolean onPreDraw() {
+            View original = volume.get();
+            if (original == null) return true;
+            int expectedVis = ReloadRuntime.enabled() ? original.getVisibility() : View.GONE;
+            if (expectedVis != lastVisibility
+                    || original.getAlpha() != lastAlpha
+                    || original.isEnabled() != lastEnabled) {
+                refresh();
+            }
+            return true;
         }
 
         @Override public void onClick(View view) {
@@ -125,6 +145,11 @@ public final class NativeReloadViews {
                     if (original.getParent() instanceof View parent) {
                         parent.addOnLayoutChangeListener(this);
                     }
+                    ViewTreeObserver vto = original.getViewTreeObserver();
+                    if (vto != null && vto.isAlive()) {
+                        vto.addOnPreDrawListener(this);
+                        observer = vto;
+                    }
                 }
             }
             refresh();
@@ -139,6 +164,10 @@ public final class NativeReloadViews {
                     if (original.getParent() instanceof View parent) {
                         parent.removeOnLayoutChangeListener(this);
                     }
+                }
+                if (observer != null) {
+                    if (observer.isAlive()) observer.removeOnPreDrawListener(this);
+                    observer = null;
                 }
             }
         }

@@ -10,6 +10,7 @@ import android.view.Gravity;
 import android.view.View;
 import android.view.ViewGroup;
 import android.view.ViewParent;
+import android.view.ViewTreeObserver;
 import android.widget.FrameLayout;
 import android.widget.ImageView;
 
@@ -34,6 +35,9 @@ final class DanmakuOverlay {
     private final int miniPlayerLayoutId;
     private final int backButtonId;
     private final int settingsButtonId;
+    private final int shareButtonId;
+    private final int castButtonId;
+    private final int clipTextButtonId;
     private final int[] topButtonIds;
     private final DanmakuView danmaku;
     private final ImageView button;
@@ -44,14 +48,24 @@ final class DanmakuOverlay {
     private final DanmakuQuickSettings quickSettings;
     private final Rect rect = new Rect();
     private final Rect buttonRect = new Rect();
+    private final ViewTreeObserver.OnPreDrawListener preDrawSync = this::onControlsPreDraw;
+    private ViewTreeObserver controlsObserver;
     private volatile boolean active;
+    private int lastValidOffset = -1;
+    private int lastAnchorLeft = -1;
+    private boolean lastControlsShown;
+    private float lastControlsAlpha = -1f;
+    private boolean lastQuickSettingsEnabled;
 
     private final SharedPreferences.OnSharedPreferenceChangeListener settingsListener = (preferences, key) -> {
         if (Settings.DANMAKU_ENABLED.key.equals(key)
                 || Settings.DANMAKU_PORTRAIT.key.equals(key)
                 || Settings.DANMAKU_MINI_PLAYER.key.equals(key)
                 || Settings.DANMAKU_PICTURE_IN_PICTURE.key.equals(key)
-                || KizuSettings.DANMAKU_QUICK_SETTINGS.key.equals(key)) {
+                || KizuSettings.DANMAKU_QUICK_SETTINGS.key.equals(key)
+                || app.morphe.extension.settings.Settings.HIDE_PLAYER_LIVE_SHARE_BUTTON.key.equals(key)
+                || app.morphe.extension.settings.Settings.HIDE_CAST_BUTTON.key.equals(key)
+                || app.morphe.extension.settings.Settings.HIDE_PLAYER_CREATE_CLIP_BUTTON.key.equals(key)) {
             update();
         }
     };
@@ -64,6 +78,9 @@ final class DanmakuOverlay {
         miniPlayerLayoutId = Utils.getResourceId(context, "draggable_layout", "id");
         backButtonId = Utils.getResourceId(context, "back_button", "id");
         settingsButtonId = Utils.getResourceId(context, "settings_button", "id");
+        shareButtonId = Utils.getResourceId(context, "share_button", "id");
+        castButtonId = Utils.getResourceId(context, "cast_button", "id");
+        clipTextButtonId = Utils.getResourceId(context, "create_clip_text_button", "id");
         topButtonIds = new int[TOP_BUTTONS.length];
         for (int i = 0; i < TOP_BUTTONS.length; i++) {
             topButtonIds[i] = Utils.getResourceId(context, TOP_BUTTONS[i], "id");
@@ -137,17 +154,37 @@ final class DanmakuOverlay {
         danmaku.addOnAttachStateChangeListener(new View.OnAttachStateChangeListener() {
             @Override public void onViewAttachedToWindow(View view) {
                 Setting.addChangeListener(settingsListener);
+                attachControlsObserver();
                 update();
             }
             @Override public void onViewDetachedFromWindow(View view) {
                 active = false;
                 Setting.removeChangeListener(settingsListener);
+                detachControlsObserver();
                 quickSettings.dismiss();
             }
         });
         if (danmaku.isAttachedToWindow()) {
             Setting.addChangeListener(settingsListener);
+            attachControlsObserver();
             active = isShown();
+        }
+    }
+
+    private void attachControlsObserver() {
+        if (!controls.isAttachedToWindow()) return;
+        if (controlsObserver != null && controlsObserver.isAlive()) return;
+        ViewTreeObserver vto = controls.getViewTreeObserver();
+        if (vto != null && vto.isAlive()) {
+            vto.addOnPreDrawListener(preDrawSync);
+            controlsObserver = vto;
+        }
+    }
+
+    private void detachControlsObserver() {
+        if (controlsObserver != null) {
+            if (controlsObserver.isAlive()) controlsObserver.removeOnPreDrawListener(preDrawSync);
+            controlsObserver = null;
         }
     }
 
@@ -233,53 +270,163 @@ final class DanmakuOverlay {
         updateButton(available);
     }
 
-    private void updateButton(boolean available) {
+    private boolean onControlsPreDraw() {
+        try {
+            View backButton = backButtonId != 0 ? controls.findViewById(backButtonId) : null;
+            boolean controlsShown = backButton != null && backButton.isShown();
+            float controlsAlpha = controlsShown ? resolveControlsAlpha(backButton) : 0f;
+            boolean quickSettingsEnabled = KizuSettings.DANMAKU_QUICK_SETTINGS.get();
+            int anchorLeft = controlsShown ? computeAnchorLeft() : lastAnchorLeft;
+            if (controlsShown != lastControlsShown
+                    || controlsAlpha != lastControlsAlpha
+                    || anchorLeft != lastAnchorLeft
+                    || quickSettingsEnabled != lastQuickSettingsEnabled) {
+                if (updateButton(isAvailable())) {
+                    return false;
+                }
+            }
+        } catch (Exception ex) {
+            Utils.logError("Danmaku: pre-draw button sync failed", ex);
+        }
+        return true;
+    }
+
+    private boolean isSkippedHiddenTopButton(int id) {
+        if (id == shareButtonId && app.morphe.extension.settings.Settings.HIDE_PLAYER_LIVE_SHARE_BUTTON.get()) {
+            return true;
+        }
+        if (id == castButtonId && app.morphe.extension.settings.Settings.HIDE_CAST_BUTTON.get()) {
+            return true;
+        }
+        return id == clipTextButtonId
+                && app.morphe.extension.settings.Settings.HIDE_PLAYER_CREATE_CLIP_BUTTON.get();
+    }
+
+    private int computeAnchorLeft() {
+        int left = Integer.MAX_VALUE;
+        for (int id : topButtonIds) {
+            if (id == 0 || isSkippedHiddenTopButton(id)) continue;
+            View view = controls.findViewById(id);
+            if (view == null || !view.isShown() || view.getWidth() <= 0) continue;
+            buttonRect.set(0, 0, view.getWidth(), view.getHeight());
+            controls.offsetDescendantRectToMyCoords(view, buttonRect);
+            left = Math.min(left, buttonRect.left);
+        }
+        return left;
+    }
+
+    private float resolveControlsAlpha(View backButton) {
+        float alpha = backButton.getAlpha();
+        for (ViewParent parent = backButton.getParent();
+             parent instanceof View view && parent != controls;
+             parent = view.getParent()) {
+            alpha *= view.getAlpha();
+        }
+        return Math.max(0f, Math.min(1f, alpha));
+    }
+
+    private void applyControlsAlpha(float alpha) {
+        if (button.getAlpha() != alpha) button.setAlpha(alpha);
+        if (settingsButton.getAlpha() != alpha) settingsButton.setAlpha(alpha);
+        if (chatButton.getAlpha() != alpha) chatButton.setAlpha(alpha);
+        if (betButton.getAlpha() != alpha) betButton.setAlpha(alpha);
+    }
+
+    private boolean updateButton(boolean available) {
+        attachControlsObserver();
         View backButton = backButtonId != 0 ? controls.findViewById(backButtonId) : null;
-        boolean controlsShown = backButton != null && backButton.getVisibility() == View.VISIBLE;
+        boolean controlsShown = backButton != null && backButton.isShown();
         boolean quickSettingsEnabled = KizuSettings.DANMAKU_QUICK_SETTINGS.get();
+        float controlsAlpha = controlsShown ? resolveControlsAlpha(backButton) : 0f;
+
+        lastControlsShown = controlsShown;
+        lastControlsAlpha = controlsAlpha;
+        lastQuickSettingsEnabled = quickSettingsEnabled;
+
         boolean visible = controlsShown && available;
         boolean settingsVisible = visible && quickSettingsEnabled;
-        button.setVisibility(visible ? View.VISIBLE : View.GONE);
-        settingsButton.setVisibility(settingsVisible ? View.VISIBLE : View.GONE);
         if (!settingsVisible) quickSettings.dismiss();
-        chatButton.setVisibility(controlsShown ? View.VISIBLE : View.INVISIBLE);
-        betButton.setVisibility(controlsShown ? View.VISIBLE : View.INVISIBLE);
 
-        if (!controlsShown) return;
+        if (!controlsShown) {
+            button.setVisibility(View.INVISIBLE);
+            settingsButton.setVisibility(View.INVISIBLE);
+            chatButton.setVisibility(View.INVISIBLE);
+            betButton.setVisibility(View.INVISIBLE);
+            return false;
+        }
 
         View template = null;
-        int left = controls.getWidth();
+        int left = Integer.MAX_VALUE;
         for (int id : topButtonIds) {
             if (id == 0) continue;
             View view = controls.findViewById(id);
             if (view == null) continue;
             if (id == settingsButtonId) template = view;
-            if (view.getVisibility() != View.VISIBLE || view.getWidth() == 0) continue;
+            if (isSkippedHiddenTopButton(id) || !view.isShown() || view.getWidth() <= 0) continue;
             buttonRect.set(0, 0, view.getWidth(), view.getHeight());
             controls.offsetDescendantRectToMyCoords(view, buttonRect);
             left = Math.min(left, buttonRect.left);
         }
+
+        if (left != Integer.MAX_VALUE) {
+            lastAnchorLeft = left;
+            lastValidOffset = Math.max(0, controls.getWidth() - left);
+        }
+        if (lastValidOffset < 0) {
+            button.setVisibility(View.INVISIBLE);
+            settingsButton.setVisibility(View.INVISIBLE);
+            chatButton.setVisibility(View.INVISIBLE);
+            betButton.setVisibility(View.INVISIBLE);
+            return false;
+        }
+
         int size = template != null && template.getLayoutParams().width > 0
                 ? template.getLayoutParams().width
                 : Math.round(48 * controls.getResources().getDisplayMetrics().density);
-        int offset = Math.max(0, controls.getWidth() - left);
+        int offset = lastValidOffset;
+        boolean layoutChanged = false;
+        boolean deferredInitial = false;
         if (visible) {
-            layoutButton(button, template, size, offset);
+            int r = layoutButton(button, template, size, offset);
+            layoutChanged |= (r & 1) != 0;
+            deferredInitial |= (r & 2) != 0;
             offset += size;
             if (quickSettingsEnabled) {
-                layoutButton(settingsButton, template, size, offset);
+                r = layoutButton(settingsButton, template, size, offset);
+                layoutChanged |= (r & 1) != 0;
+                deferredInitial |= (r & 2) != 0;
                 offset += size;
             }
         }
-        layoutButton(chatButton, template, size, offset);
+        int cr = layoutButton(chatButton, template, size, offset);
+        layoutChanged |= (cr & 1) != 0;
+        deferredInitial |= (cr & 2) != 0;
         offset += size;
-        layoutButton(betButton, template, size, offset);
+        int br = layoutButton(betButton, template, size, offset);
+        layoutChanged |= (br & 1) != 0;
+        deferredInitial |= (br & 2) != 0;
+
+        applyControlsAlpha(controlsAlpha);
+        if (deferredInitial) {
+            button.setVisibility(View.INVISIBLE);
+            settingsButton.setVisibility(View.INVISIBLE);
+            chatButton.setVisibility(View.INVISIBLE);
+            betButton.setVisibility(View.INVISIBLE);
+        } else {
+            button.setVisibility(visible ? View.VISIBLE : View.INVISIBLE);
+            settingsButton.setVisibility(settingsVisible ? View.VISIBLE : View.INVISIBLE);
+            chatButton.setVisibility(View.VISIBLE);
+            betButton.setVisibility(View.VISIBLE);
+        }
+        return layoutChanged;
     }
 
-    private static void layoutButton(ImageView target, View template, int size, int rightMargin) {
+    /** Returns bit 1 if layout params were applied synchronously, bit 2 if initial placement was deferred via post. */
+    private int layoutButton(ImageView target, View template, int size, int rightMargin) {
         int topMargin = template != null && template.getLayoutParams() instanceof ViewGroup.MarginLayoutParams mlp
                 ? mlp.topMargin : 0;
         FrameLayout.LayoutParams params = (FrameLayout.LayoutParams) target.getLayoutParams();
+        boolean wasUnmeasured = params.width == 0;
         boolean styledNow = false;
         if (target.getTag() != TAG_STYLED && template instanceof ImageView templateButton) {
             target.setTag(TAG_STYLED);
@@ -294,12 +441,22 @@ final class DanmakuOverlay {
         }
         if (!styledNow && params.width == size && params.height == size
                 && params.rightMargin == rightMargin && params.topMargin == topMargin) {
-            return;
+            return 0;
         }
         params.width = size;
         params.height = size;
         params.rightMargin = rightMargin;
         params.topMargin = topMargin;
-        target.post(() -> target.setLayoutParams(params));
+        if (!controls.isInLayout()) {
+            target.setLayoutParams(params);
+            return 1;
+        }
+        target.post(() -> {
+            target.setLayoutParams(params);
+            if (wasUnmeasured) {
+                try { updateButton(isAvailable()); } catch (Exception ignored) {}
+            }
+        });
+        return wasUnmeasured ? 2 : 0;
     }
 }

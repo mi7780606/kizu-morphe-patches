@@ -3,6 +3,7 @@ package app.morphe.extension.videostats;
 import android.content.SharedPreferences;
 import android.util.Log;
 import android.view.View;
+import android.view.ViewTreeObserver;
 
 import java.lang.ref.WeakReference;
 import java.util.ArrayList;
@@ -60,13 +61,15 @@ public final class NativeVideoStatsViews {
     }
 
     private static final class Binding implements View.OnClickListener,
-            View.OnAttachStateChangeListener, View.OnLayoutChangeListener {
+            View.OnAttachStateChangeListener, View.OnLayoutChangeListener, ViewTreeObserver.OnPreDrawListener {
         private final WeakReference<View> root;
         private final WeakReference<View> button;
         private final WeakReference<View> volume;
         private int lastVisibility = -1;
+        private float lastAlpha = -1f;
         private boolean lastEnabled;
         private boolean listenersAttached;
+        private ViewTreeObserver observer;
 
         Binding(View root, View button, View volume) {
             this.root = new WeakReference<>(root);
@@ -78,17 +81,34 @@ public final class NativeVideoStatsViews {
             View target = button.get();
             View original = volume.get();
             if (target == null || original == null) return;
-            boolean show = VideoStatsRuntime.enabled() && original.getVisibility() == View.VISIBLE;
-            int next = show ? View.VISIBLE : View.GONE;
-            boolean enabled = show && original.isEnabled();
+            boolean featureEnabled = VideoStatsRuntime.enabled();
+            int next = featureEnabled ? original.getVisibility() : View.GONE;
+            float alpha = original.getAlpha();
+            boolean enabled = featureEnabled && next == View.VISIBLE && original.isEnabled();
             if (lastVisibility != next || target.getVisibility() != next) {
                 lastVisibility = next;
                 target.setVisibility(next);
+            }
+            if (lastAlpha != alpha || target.getAlpha() != alpha) {
+                lastAlpha = alpha;
+                target.setAlpha(alpha);
             }
             if (lastEnabled != enabled || target.isEnabled() != enabled) {
                 lastEnabled = enabled;
                 target.setEnabled(enabled);
             }
+        }
+
+        @Override public boolean onPreDraw() {
+            View original = volume.get();
+            if (original == null) return true;
+            int expectedVis = VideoStatsRuntime.enabled() ? original.getVisibility() : View.GONE;
+            if (expectedVis != lastVisibility
+                    || original.getAlpha() != lastAlpha
+                    || original.isEnabled() != lastEnabled) {
+                refresh();
+            }
+            return true;
         }
 
         @Override public void onClick(View view) {
@@ -137,6 +157,11 @@ public final class NativeVideoStatsViews {
                     if (original.getParent() instanceof View parent) {
                         parent.addOnLayoutChangeListener(this);
                     }
+                    ViewTreeObserver vto = original.getViewTreeObserver();
+                    if (vto != null && vto.isAlive()) {
+                        vto.addOnPreDrawListener(this);
+                        observer = vto;
+                    }
                 }
             }
             refresh();
@@ -151,6 +176,10 @@ public final class NativeVideoStatsViews {
                     if (original.getParent() instanceof View parent) {
                         parent.removeOnLayoutChangeListener(this);
                     }
+                }
+                if (observer != null) {
+                    if (observer.isAlive()) observer.removeOnPreDrawListener(this);
+                    observer = null;
                 }
             }
         }
