@@ -42,7 +42,7 @@ public class UyuSettingsFragment extends PreferenceFragment {
     private FontPreference fontPreference;
 
     private static final String[] PROXY_NAMES = {
-            "Default (Luminous EU2)",
+            "Off (No proxy)",
             "Luminous EU (Russia)",
             "Luminous EU2 (Ukraine)",
             "Luminous EU3 (Bulgaria)",
@@ -258,20 +258,37 @@ public class UyuSettingsFragment extends PreferenceFragment {
     private void addAdsSettings(PreferenceScreen screen) {
         addSwitch(screen, Settings.BLOCK_ADS, "Block ads",
                 "Blocks live, VOD and display ads. Ads that are part of the stream itself are covered with a black screen and muted until they end.");
+        addSwitch(screen, Settings.ADS_EMBED_PLAYER_TYPE, "Use embed player type",
+                "Request streams as Twitch's embed player to try reducing midrolls. Keep this off if you have subscriptions or Twitch Turbo, as embed tokens can ignore ad-free benefits.");
 
         Preference proxySelector = new Preference(SettingsUi.preferenceContext(screen.getContext()));
         proxySelector.setTitle("Proxy");
         proxySelector.setSummary(proxyName(Settings.ADS_PROXY_URL.get()));
+
+        Preference proxy = new TextPreference(SettingsUi.preferenceContext(screen.getContext()), Settings.ADS_PROXY_URL,
+                "https://example.com/live/{channel}?allow_source=true&allow_audio_only=true&fast_bread=true",
+                "Proxy is off. Select a proxy above or enter a custom URL.");
+        proxy.setTitle("Proxy URL");
+        proxy.setOnPreferenceChangeListener((pref, newValue) -> {
+            String value = newValue instanceof String ? ((String) newValue).trim() : "";
+            proxySelector.setSummary(proxyName(value));
+            return true;
+        });
+
         proxySelector.setOnPreferenceClickListener(clicked -> {
             Activity activity = getActivity();
             if (activity == null) return true;
-            String current = Settings.ADS_PROXY_URL.get();
+            String current = Settings.ADS_PROXY_URL.get().trim();
             int selected = proxyIndex(current);
             SettingsUi.dialog(activity)
                     .setTitle("Ad-blocking proxy")
                     .setSingleChoiceItems(PROXY_NAMES, selected, (dialog, which) -> {
-                        Settings.ADS_PROXY_URL.save(PROXY_URLS[which]);
+                        String url = PROXY_URLS[which];
+                        Settings.ADS_PROXY_URL.save(url);
                         proxySelector.setSummary(PROXY_NAMES[which]);
+                        proxy.setSummary(url.isEmpty()
+                                ? "Proxy is off. Select a proxy above or enter a custom URL."
+                                : url);
                         dialog.dismiss();
                     })
                     .setNegativeButton(android.R.string.cancel, null)
@@ -279,22 +296,19 @@ public class UyuSettingsFragment extends PreferenceFragment {
             return true;
         });
         screen.addPreference(proxySelector);
-
-        Preference proxy = new TextPreference(SettingsUi.preferenceContext(screen.getContext()), Settings.ADS_PROXY_URL,
-                "https://example.com/live/{channel}?allow_source=true&allow_audio_only=true&fast_bread=true",
-                "Using the built-in default: Luminous EU2. Edit to use a custom proxy URL.");
-        proxy.setTitle("Proxy URL");
         screen.addPreference(proxy);
 
         Preference note = new Preference(SettingsUi.preferenceContext(screen.getContext()));
-        note.setSummary("Optional. Live streams are loaded through the selected proxy, which can remove the ads that are part of the stream. {channel} is replaced with the channel name; without it, the name is added to the end.\n\nPublic proxies can go offline or change behavior. The proxy operator can see which channels you watch. If the proxy fails, uyu shows Proxy failed and falls back to Twitch while device-side ad blocking remains active.");
+        note.setSummary("Optional. Live streams are loaded through the selected proxy, which can remove ads stitched into the stream. Channels where your account already has ad-free playback (such as active subscriptions or Twitch Turbo) automatically skip the proxy.\n\n{channel} is replaced with the channel name; without it, the name is added to the end. Public proxies can go offline or serve ads; if a proxy fails, it falls back to Twitch while device-side ad blocking remains active.");
         note.setSelectable(false);
         screen.addPreference(note);
     }
 
     private static int proxyIndex(String value) {
+        String trimmed = value == null ? "" : value.trim();
+        if (trimmed.isEmpty() || "off".equalsIgnoreCase(trimmed)) return 0;
         for (int i = 0; i < PROXY_URLS.length; i++) {
-            if (PROXY_URLS[i].equals(value)) return i;
+            if (PROXY_URLS[i].equals(trimmed)) return i;
         }
         return -1;
     }

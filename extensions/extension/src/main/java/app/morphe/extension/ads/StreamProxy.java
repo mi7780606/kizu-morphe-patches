@@ -7,6 +7,8 @@ import android.os.Handler;
 import android.os.Looper;
 import android.widget.Toast;
 
+import org.json.JSONObject;
+
 import java.lang.reflect.InvocationTargetException;
 import java.lang.reflect.Method;
 import java.lang.reflect.Proxy;
@@ -45,7 +47,13 @@ final class StreamProxy {
 
     static Uri override(Uri usherUri) {
         String proxy = Settings.ADS_PROXY_URL.get().trim();
-        if (proxy.isEmpty()) proxy = "https://eu2.luminous.dev/live/{channel}?allow_source=true&allow_audio_only=true";
+        if (proxy.isEmpty() || "off".equalsIgnoreCase(proxy)) {
+            return usherUri;
+        }
+        if (hasAdFreeToken(usherUri)) {
+            Utils.logInfo("Proxy skipped: stream token is already ad-free (subscriber/Turbo)");
+            return usherUri;
+        }
         String channel = usherUri.getLastPathSegment();
         if (channel == null || !channel.endsWith(PLAYLIST_SUFFIX)) {
             Utils.logInfo("Proxy not used, no channel in " + usherUri.getPath());
@@ -68,6 +76,32 @@ final class StreamProxy {
         originals.put(uri.toString(), usherUri);
         Utils.logInfo("Loading " + channel + " through the proxy " + uri.getHost());
         return uri;
+    }
+
+    /**
+     * Checks whether Twitch's own signed access token in the usher URI already grants ad-free
+     * playback (e.g. channel subscription, Twitch Turbo, or privileged access). Routing such
+     * streams through an anonymous public proxy drops the user's entitlement and can cause ads.
+     */
+    private static boolean hasAdFreeToken(Uri usherUri) {
+        if (usherUri == null) return false;
+        try {
+            String token = usherUri.getQueryParameter("token");
+            if (token == null || token.isEmpty()) return false;
+            String trimmed = token.trim();
+            if (trimmed.startsWith("%7B") || trimmed.startsWith("%7b")) {
+                trimmed = Uri.decode(trimmed);
+            }
+            if (!trimmed.startsWith("{")) return false;
+            JSONObject json = new JSONObject(trimmed);
+            if (json.optBoolean("hide_ads", false)) return true;
+            if (json.optBoolean("turbo", false)) return true;
+            if (json.optBoolean("privileged", false)) return true;
+            if (json.has("show_ads") && !json.optBoolean("show_ads", true)) return true;
+            if (json.has("server_ads") && !json.optBoolean("server_ads", true)) return true;
+        } catch (Throwable ignored) {
+        }
+        return false;
     }
 
     static void preload(Object mediaPlayer, Uri uri, Object listener) {

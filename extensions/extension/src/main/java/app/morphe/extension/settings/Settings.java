@@ -83,7 +83,10 @@ public final class Settings {
     // Ads.
     public static final BooleanSetting BLOCK_ADS =
             new BooleanSetting("block_ads", true);
-    /** Empty means device-side blocking only. {channel} is replaced by the channel name. */
+    /** Request access tokens as the "embed" player type. Off by default so subscriber/Turbo ad-free tokens stay intact. */
+    public static final BooleanSetting ADS_EMBED_PLAYER_TYPE =
+            new BooleanSetting("ads_embed_player_type", false);
+    /** Empty means device-side blocking only (proxy off). {channel} is replaced by the channel name. */
     public static final StringSetting ADS_PROXY_URL =
             new StringSetting("ads_proxy_url", "");
 

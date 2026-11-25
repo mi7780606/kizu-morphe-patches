@@ -57,7 +57,7 @@ public final class BlockAdsPatch {
      */
     public static String overridePlayerType(String playerType) {
         try {
-            if (!isEnabled()) return playerType;
+            if (!isEnabled() || !Settings.ADS_EMBED_PLAYER_TYPE.get()) return playerType;
             Utils.logInfo("Requesting the stream as the " + EMBED_PLAYER_TYPE + " player instead of " + playerType);
             return EMBED_PLAYER_TYPE;
         } catch (Exception ex) {
