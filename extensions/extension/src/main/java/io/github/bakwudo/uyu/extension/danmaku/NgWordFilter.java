@@ -59,6 +59,15 @@ public final class NgWordFilter {
         cachedWords = set.isEmpty() ? Collections.emptySet() : set;
     }
 
+    /** テキスト単体がNGワードと完全一致するか判定する（マルチ視聴の弾幕フィルタ用） */
+    public static boolean matchesPlainText(String text) {
+        if (text == null) return false;
+        String trimmed = text.trim();
+        if (trimmed.isEmpty()) return false;
+        Set<String> ng = words();
+        return !ng.isEmpty() && ng.contains(trimmed);
+    }
+
     /** DanmakuPatch.onMessagesReceived の先頭から呼ぶ。リストを直接書き換える */
     public static void filter(List<?> messages) {
         if (messages == null || messages.isEmpty()) return;

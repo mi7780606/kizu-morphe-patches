@@ -101,6 +101,11 @@ public final class ChannelPoints {
         return channelId;
     }
 
+    /** Kizu: 視聴中チャンネルのログイン名（マルチ視聴で使う） */
+    public static String currentChannelLogin() {
+        return channelLogin;
+    }
+
     /** Called by the existing stable ChannelChatConnectionKey(String,String) hook. */
     public static void onChannelChanged(String id, String login) {
         app.morphe.extension.watchlog.WatchTimeTracker.onChannelChanged(id, login);

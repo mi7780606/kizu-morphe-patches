@@ -90,6 +90,10 @@ public class KizuExtraSettingsFragment extends PreferenceFragment {
             addSwitch(screen, KizuSettings.DANMAKU_QUICK_SETTINGS.key, KizuSettings.DANMAKU_QUICK_SETTINGS.defaultValue,
                     "弾幕の設定ボタン",
                     "プレイヤー右上に弾幕のクイック設定ボタンを表示します。");
+            addSwitch(screen, KizuSettings.MULTI_STREAM_BUTTON.key, KizuSettings.MULTI_STREAM_BUTTON.defaultValue,
+                    "マルチ視聴ボタン",
+                    "プレイヤー右上に複数配信の同時視聴（サブ小窓 / 最大4枠マルチビュー）ボタンを表示します。");
+            addMultiStream(screen);
 
             addSwitch(screen, KizuSettings.HIDE_CHAT_MENU_BUTTON.key, KizuSettings.HIDE_CHAT_MENU_BUTTON.defaultValue,
                     "チャット欄の三点リーダーを非表示",
@@ -120,6 +124,18 @@ public class KizuExtraSettingsFragment extends PreferenceFragment {
         } catch (Throwable t) {
             Log.e(TAG, "build failed", t);
         }
+    }
+
+    private void addMultiStream(PreferenceScreen screen) {
+        Preference p = new Preference(SettingsUi.preferenceContext(screen.getContext()));
+        p.setTitle("マルチ視聴（同時視聴）を開く");
+        p.setSummary("最大4つの配信を同時に視聴できるマルチビュー画面を開きます。");
+        p.setOnPreferenceClickListener(clicked -> {
+            android.app.Activity a = getActivity();
+            if (a != null) app.morphe.extension.multistream.MultiStreamManager.openMultiViewDirect(a);
+            return true;
+        });
+        screen.addPreference(p);
     }
 
     private void addManualBet(PreferenceScreen screen) {

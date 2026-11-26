@@ -4,7 +4,13 @@ import android.app.Activity;
 import android.content.Context;
 import android.content.SharedPreferences;
 import android.content.res.Configuration;
+import android.graphics.Canvas;
+import android.graphics.Color;
+import android.graphics.ColorFilter;
+import android.graphics.Paint;
+import android.graphics.PixelFormat;
 import android.graphics.Rect;
+import android.graphics.RectF;
 import android.graphics.drawable.Drawable;
 import android.view.Gravity;
 import android.view.View;
@@ -45,6 +51,7 @@ final class DanmakuOverlay {
     private final ImageView settingsButton;
     private final ImageView chatButton;
     private final ImageView betButton;
+    private final ImageView multiButton;
     private final DanmakuQuickSettings quickSettings;
     private final Rect rect = new Rect();
     private final Rect buttonRect = new Rect();
@@ -56,6 +63,7 @@ final class DanmakuOverlay {
     private boolean lastControlsShown;
     private float lastControlsAlpha = -1f;
     private boolean lastQuickSettingsEnabled;
+    private boolean lastMultiButtonEnabled;
 
     private final SharedPreferences.OnSharedPreferenceChangeListener settingsListener = (preferences, key) -> {
         if (Settings.DANMAKU_ENABLED.key.equals(key)
@@ -63,6 +71,7 @@ final class DanmakuOverlay {
                 || Settings.DANMAKU_MINI_PLAYER.key.equals(key)
                 || Settings.DANMAKU_PICTURE_IN_PICTURE.key.equals(key)
                 || KizuSettings.DANMAKU_QUICK_SETTINGS.key.equals(key)
+                || KizuSettings.MULTI_STREAM_BUTTON.key.equals(key)
                 || app.morphe.extension.settings.Settings.HIDE_PLAYER_LIVE_SHARE_BUTTON.key.equals(key)
                 || app.morphe.extension.settings.Settings.HIDE_CAST_BUTTON.key.equals(key)
                 || app.morphe.extension.settings.Settings.HIDE_PLAYER_CREATE_CLIP_BUTTON.key.equals(key)) {
@@ -145,6 +154,21 @@ final class DanmakuOverlay {
             }
         });
         controls.addView(betButton, new FrameLayout.LayoutParams(0, 0, Gravity.TOP | Gravity.RIGHT));
+
+        // Kizu: マルチ視聴（同時視聴）を開くボタン
+        multiButton = new ImageView(context);
+        multiButton.setImageDrawable(new MultiGridIcon(iconSize));
+        multiButton.setScaleType(ImageView.ScaleType.FIT_CENTER);
+        multiButton.setContentDescription("マルチ視聴");
+        multiButton.setVisibility(View.INVISIBLE);
+        multiButton.setOnClickListener(v -> {
+            try {
+                app.morphe.extension.multistream.MultiStreamManager.openLauncherSheet(v.getContext());
+            } catch (Throwable t) {
+                Utils.logError("Kizu: multi-stream failed", t);
+            }
+        });
+        controls.addView(multiButton, new FrameLayout.LayoutParams(0, 0, Gravity.TOP | Gravity.RIGHT));
 
         player.addOnLayoutChangeListener((v, l, t, r, b, ol, ot, or, ob) -> update());
         video.addOnLayoutChangeListener((v, l, t, r, b, ol, ot, or, ob) -> update());
@@ -276,11 +300,13 @@ final class DanmakuOverlay {
             boolean controlsShown = backButton != null && backButton.isShown();
             float controlsAlpha = controlsShown ? resolveControlsAlpha(backButton) : 0f;
             boolean quickSettingsEnabled = KizuSettings.DANMAKU_QUICK_SETTINGS.get();
+            boolean multiButtonEnabled = KizuSettings.MULTI_STREAM_BUTTON.get();
             int anchorLeft = controlsShown ? computeAnchorLeft() : lastAnchorLeft;
             if (controlsShown != lastControlsShown
                     || controlsAlpha != lastControlsAlpha
                     || anchorLeft != lastAnchorLeft
-                    || quickSettingsEnabled != lastQuickSettingsEnabled) {
+                    || quickSettingsEnabled != lastQuickSettingsEnabled
+                    || multiButtonEnabled != lastMultiButtonEnabled) {
                 if (updateButton(isAvailable())) {
                     return false;
                 }
@@ -330,6 +356,7 @@ final class DanmakuOverlay {
         if (settingsButton.getAlpha() != alpha) settingsButton.setAlpha(alpha);
         if (chatButton.getAlpha() != alpha) chatButton.setAlpha(alpha);
         if (betButton.getAlpha() != alpha) betButton.setAlpha(alpha);
+        if (multiButton.getAlpha() != alpha) multiButton.setAlpha(alpha);
     }
 
     private boolean updateButton(boolean available) {
@@ -337,11 +364,13 @@ final class DanmakuOverlay {
         View backButton = backButtonId != 0 ? controls.findViewById(backButtonId) : null;
         boolean controlsShown = backButton != null && backButton.isShown();
         boolean quickSettingsEnabled = KizuSettings.DANMAKU_QUICK_SETTINGS.get();
+        boolean multiButtonEnabled = KizuSettings.MULTI_STREAM_BUTTON.get();
         float controlsAlpha = controlsShown ? resolveControlsAlpha(backButton) : 0f;
 
         lastControlsShown = controlsShown;
         lastControlsAlpha = controlsAlpha;
         lastQuickSettingsEnabled = quickSettingsEnabled;
+        lastMultiButtonEnabled = multiButtonEnabled;
 
         boolean visible = controlsShown && available;
         boolean settingsVisible = visible && quickSettingsEnabled;
@@ -352,6 +381,7 @@ final class DanmakuOverlay {
             settingsButton.setVisibility(View.INVISIBLE);
             chatButton.setVisibility(View.INVISIBLE);
             betButton.setVisibility(View.INVISIBLE);
+            multiButton.setVisibility(View.INVISIBLE);
             return false;
         }
 
@@ -377,6 +407,7 @@ final class DanmakuOverlay {
             settingsButton.setVisibility(View.INVISIBLE);
             chatButton.setVisibility(View.INVISIBLE);
             betButton.setVisibility(View.INVISIBLE);
+            multiButton.setVisibility(View.INVISIBLE);
             return false;
         }
 
@@ -405,6 +436,12 @@ final class DanmakuOverlay {
         int br = layoutButton(betButton, template, size, offset);
         layoutChanged |= (br & 1) != 0;
         deferredInitial |= (br & 2) != 0;
+        offset += size;
+        if (multiButtonEnabled) {
+            int mr = layoutButton(multiButton, template, size, offset);
+            layoutChanged |= (mr & 1) != 0;
+            deferredInitial |= (mr & 2) != 0;
+        }
 
         applyControlsAlpha(controlsAlpha);
         if (deferredInitial) {
@@ -412,11 +449,13 @@ final class DanmakuOverlay {
             settingsButton.setVisibility(View.INVISIBLE);
             chatButton.setVisibility(View.INVISIBLE);
             betButton.setVisibility(View.INVISIBLE);
+            multiButton.setVisibility(View.INVISIBLE);
         } else {
             button.setVisibility(visible ? View.VISIBLE : View.INVISIBLE);
             settingsButton.setVisibility(settingsVisible ? View.VISIBLE : View.INVISIBLE);
             chatButton.setVisibility(View.VISIBLE);
             betButton.setVisibility(View.VISIBLE);
+            multiButton.setVisibility(multiButtonEnabled ? View.VISIBLE : View.INVISIBLE);
         }
         return layoutChanged;
     }
@@ -458,5 +497,53 @@ final class DanmakuOverlay {
             }
         });
         return wasUnmeasured ? 2 : 0;
+    }
+
+    /** Crisp 2x2 grid vector icon matching Twitch's white player overlay buttons. */
+    private static final class MultiGridIcon extends Drawable {
+        private final Paint paint = new Paint(Paint.ANTI_ALIAS_FLAG);
+        private final RectF cell = new RectF();
+        private final int size;
+
+        MultiGridIcon(int size) {
+            this.size = size;
+            paint.setColor(Color.WHITE);
+            paint.setStyle(Paint.Style.STROKE);
+        }
+
+        @Override
+        public void draw(Canvas canvas) {
+            Rect b = getBounds();
+            float s = Math.min(b.width(), b.height());
+            if (s <= 0f) return;
+            float cx = b.exactCenterX();
+            float cy = b.exactCenterY();
+            float half = s * 0.38f;
+            float gap = s * 0.08f;
+            float stroke = Math.max(1.5f, s * 0.085f);
+            float radius = s * 0.08f;
+            paint.setStrokeWidth(stroke);
+
+            float cellSize = half - gap * 0.5f;
+            float l1 = cx - half;
+            float l2 = cx + gap * 0.5f;
+            float t1 = cy - half;
+            float t2 = cy + gap * 0.5f;
+
+            cell.set(l1, t1, l1 + cellSize, t1 + cellSize);
+            canvas.drawRoundRect(cell, radius, radius, paint);
+            cell.set(l2, t1, l2 + cellSize, t1 + cellSize);
+            canvas.drawRoundRect(cell, radius, radius, paint);
+            cell.set(l1, t2, l1 + cellSize, t2 + cellSize);
+            canvas.drawRoundRect(cell, radius, radius, paint);
+            cell.set(l2, t2, l2 + cellSize, t2 + cellSize);
+            canvas.drawRoundRect(cell, radius, radius, paint);
+        }
+
+        @Override public void setAlpha(int alpha) { paint.setAlpha(alpha); invalidateSelf(); }
+        @Override public void setColorFilter(ColorFilter filter) { paint.setColorFilter(filter); invalidateSelf(); }
+        @Override public int getOpacity() { return PixelFormat.TRANSLUCENT; }
+        @Override public int getIntrinsicWidth() { return size; }
+        @Override public int getIntrinsicHeight() { return size; }
     }
 }

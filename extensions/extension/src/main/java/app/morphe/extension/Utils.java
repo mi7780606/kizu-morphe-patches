@@ -17,6 +17,7 @@ import app.morphe.extension.appearance.HypeTrainHider;
 import app.morphe.extension.appearance.KizuUiTweaks;
 import app.morphe.extension.channelpoints.ChannelPoints;
 import app.morphe.extension.channelpoints.PredictionBetter;
+import app.morphe.extension.multistream.MultiStreamManager;
 import app.morphe.extension.settings.SettingsUi;
 import app.morphe.extension.settings.TwitchUi;
 import app.morphe.extension.twitch.emotes.EmoteSupport;
@@ -51,13 +52,17 @@ public final class Utils {
                     SettingsUi.invalidateThemeCache();
                     try { BottomCreateButtonHider.onActivityResumed(activity); } catch (Throwable ignored) {}
                     try { HiddenView.recheckAll(); } catch (Throwable ignored) {}
+                    try { MultiStreamManager.onActivityResumed(activity); } catch (Throwable ignored) {}
                 }
-                @Override public void onActivityPaused(Activity activity) {}
+                @Override public void onActivityPaused(Activity activity) {
+                    try { MultiStreamManager.onActivityPaused(activity); } catch (Throwable ignored) {}
+                }
                 @Override public void onActivityStopped(Activity activity) {
                     if (startedActivities > 0) startedActivities--;
                 }
                 @Override public void onActivitySaveInstanceState(Activity activity, Bundle state) {}
                 @Override public void onActivityDestroyed(Activity activity) {
+                    try { MultiStreamManager.onActivityDestroyed(activity); } catch (Throwable ignored) {}
                     synchronized (STATUS_MESSAGES) { STATUS_MESSAGES.remove(activity); }
                     if (currentActivity == activity) currentActivity = null;
                 }

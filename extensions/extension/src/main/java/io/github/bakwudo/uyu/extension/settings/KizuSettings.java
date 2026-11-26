@@ -57,5 +57,9 @@ public final class KizuSettings {
     public static final IntSetting DANMAKU_MAX_LENGTH =
             new IntSetting("kizu_danmaku_max_length", 30, 0, 200);
 
+    /** プレイヤー右上にマルチ視聴（同時視聴）ボタンを表示する */
+    public static final BooleanSetting MULTI_STREAM_BUTTON =
+            new BooleanSetting("kizu_multi_stream_button", true);
+
     private KizuSettings() {}
 }

@@ -88,6 +88,20 @@ public final class StreamProxy {
     private StreamProxy() {}
 
     /**
+     * Resolves a Twitch usher playlist URI for multi-stream playback, honoring ad-block proxy
+     * settings while automatically bypassing the proxy on subscribed / Turbo streams.
+     */
+    public static Uri resolveForMultiView(Uri usherUri) {
+        if (usherUri == null) return null;
+        try {
+            if (!Settings.BLOCK_ADS.get()) return usherUri;
+            return override(usherUri);
+        } catch (Throwable ignored) {
+            return usherUri;
+        }
+    }
+
+    /**
      * Pre-warms the GQL channel subscription cache when switching to a channel so stream setup
      * sees the cached entitlement without waiting on the network.
      */
