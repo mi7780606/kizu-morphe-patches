@@ -10,10 +10,10 @@ import android.text.TextUtils;
 import android.util.TypedValue;
 import android.view.Gravity;
 import android.view.MotionEvent;
+import android.view.ScaleGestureDetector;
 import android.view.TextureView;
 import android.view.View;
 import android.view.ViewConfiguration;
-import android.view.ViewGroup;
 import android.widget.FrameLayout;
 import android.widget.LinearLayout;
 import android.widget.ProgressBar;
@@ -29,13 +29,13 @@ import app.morphe.extension.settings.TwitchUi;
 import io.github.bakwudo.uyu.extension.danmaku.DanmakuView;
 
 /**
- * Mode A: Draggable, resizable 16:9 floating sub-stream PiP overlay docked over Twitch's normal
- * playback/chat screen, complete with proportional {@link DanmakuView} matching standard PiP scaling.
+ * Mode A: Draggable and pinch-resizable (up to 100% screen width) 16:9 floating sub-stream PiP
+ * overlay docked over Twitch's normal playback/chat screen, with proportional {@link DanmakuView}.
  */
 final class MultiStreamPipOverlay {
     private static final String TAG_VIEW = "kizu_multi_pip_overlay";
-    private static final float[] WIDTH_RATIOS = {0.38f, 0.52f, 0.68f};
-    private static final String[] SIZE_LABELS = {"小", "中", "大"};
+    private static final float[] WIDTH_RATIOS = {0.38f, 0.56f, 0.78f, 1.00f};
+    private static final String[] SIZE_LABELS = {"小", "中", "大", "最大"};
     private static final long HUD_AUTO_HIDE_MS = 3500L;
 
     private final WeakReference<Activity> activityRef;
@@ -61,10 +61,12 @@ final class MultiStreamPipOverlay {
 
     private String channelLogin;
     private String displayName;
-    private int sizeIndex = 1; // Medium (52%) default
+    private int sizeIndex = 1; // Medium (56%) default
+    private float currentWidthRatio = WIDTH_RATIOS[1];
     private boolean danmakuEnabled = true;
     private boolean dismissed;
     private boolean positionInitialized;
+    private boolean lastFullWidthVisual;
 
     MultiStreamPipOverlay(Activity activity, String login, String displayName) {
         this.activityRef = new WeakReference<>(activity);
@@ -73,7 +75,6 @@ final class MultiStreamPipOverlay {
         this.displayName = displayName != null && !displayName.isEmpty() ? displayName : login;
         this.touchSlop = Math.max(4, ViewConfiguration.get(activity).getScaledTouchSlop());
 
-        // Remove any stale overlay left on this decor view.
         View stale = decor.findViewWithTag(TAG_VIEW);
         if (stale != null) {
             try { decor.removeView(stale); } catch (Throwable ignored) {}
@@ -81,11 +82,7 @@ final class MultiStreamPipOverlay {
 
         card = new FrameLayout(activity);
         card.setTag(TAG_VIEW);
-        card.setBackground(TwitchUi.roundedRect(
-                0xFF0E0E10,
-                TwitchUi.dp(activity, 10f),
-                Math.max(1, TwitchUi.dp(activity, 1.5f)),
-                0xFF9147FF));
+        applyCardChrome(false);
         card.setClipToOutline(true);
         card.setElevation(TwitchUi.dp(activity, 14f));
         card.setClickable(true);
@@ -93,7 +90,7 @@ final class MultiStreamPipOverlay {
         textureView = new TextureView(activity);
         card.addView(textureView, new FrameLayout.LayoutParams(-1, -1));
 
-        // Proportional DanmakuView: lineHeight = getHeight() / style.rows (matches normal PiP ratio).
+        // Proportional DanmakuView: lineHeight = getHeight() / style.rows (exact normal PiP ratio).
         danmakuView = new DanmakuView(activity);
         danmakuView.setClickable(false);
         danmakuView.setFocusable(false);
@@ -114,12 +111,10 @@ final class MultiStreamPipOverlay {
         errorLabel.setOnClickListener(v -> reloadStream());
         card.addView(errorLabel, new FrameLayout.LayoutParams(-2, -2, Gravity.CENTER));
 
-        // Mini HUD overlay (auto-hides after 3.5s)
         hudOverlay = new FrameLayout(activity);
         hudOverlay.setBackgroundColor(0x55000000);
         hudOverlay.setVisibility(View.VISIBLE);
 
-        // Top bar inside PiP
         LinearLayout topRow = new LinearLayout(activity);
         topRow.setOrientation(LinearLayout.HORIZONTAL);
         topRow.setGravity(Gravity.CENTER_VERTICAL);
@@ -149,7 +144,6 @@ final class MultiStreamPipOverlay {
         topRow.addView(closeBtn);
         hudOverlay.addView(topRow, new FrameLayout.LayoutParams(-1, -2, Gravity.TOP));
 
-        // Bottom bar inside PiP
         LinearLayout bottomRow = new LinearLayout(activity);
         bottomRow.setOrientation(LinearLayout.HORIZONTAL);
         bottomRow.setGravity(Gravity.CENTER_VERTICAL | Gravity.END);
@@ -158,7 +152,8 @@ final class MultiStreamPipOverlay {
 
         sizeBtn = miniChip(activity, SIZE_LABELS[sizeIndex], v -> {
             sizeIndex = (sizeIndex + 1) % WIDTH_RATIOS.length;
-            applySizeAndClamp();
+            currentWidthRatio = WIDTH_RATIOS[sizeIndex];
+            applySizeAndClamp(true);
             updateButtons();
             scheduleHudHide();
         });
@@ -191,7 +186,7 @@ final class MultiStreamPipOverlay {
         hudOverlay.addView(bottomRow, new FrameLayout.LayoutParams(-1, -2, Gravity.BOTTOM));
         card.addView(hudOverlay, new FrameLayout.LayoutParams(-1, -1));
 
-        setupDragAndTap(card);
+        setupDragPinchAndTap(activity, card);
 
         player = new MultiStreamPlayer(activity, new MultiStreamPlayer.Listener() {
             @Override
@@ -222,14 +217,14 @@ final class MultiStreamPipOverlay {
 
         FrameLayout.LayoutParams lp = new FrameLayout.LayoutParams(0, 0, Gravity.TOP | Gravity.LEFT);
         decor.addView(card, lp);
-        applySizeAndClamp();
+        applySizeAndClamp(false);
         updateTitleBadge();
         updateButtons();
         applyDanmakuState();
 
         decorLayoutListener = (v, l, t, r, b, ol, ot, or, ob) -> {
             if (!dismissed && (r - l != or - ol || b - t != ob - ot)) {
-                applySizeAndClamp();
+                applySizeAndClamp(true);
             }
         };
         decor.addOnLayoutChangeListener(decorLayoutListener);
@@ -345,7 +340,23 @@ final class MultiStreamPipOverlay {
     private void updateButtons() {
         muteBtn.setText(player.isMuted() ? "🔇" : "🔊");
         danmakuBtn.setTextColor(danmakuEnabled ? 0xFFBF94FF : 0xAAFFFFFF);
-        sizeBtn.setText(SIZE_LABELS[sizeIndex]);
+        sizeBtn.setText(labelForRatio(currentWidthRatio));
+    }
+
+    private static String labelForRatio(float ratio) {
+        if (ratio >= 0.94f) return SIZE_LABELS[3];
+        if (ratio >= 0.68f) return SIZE_LABELS[2];
+        if (ratio >= 0.48f) return SIZE_LABELS[1];
+        return SIZE_LABELS[0];
+    }
+
+    private void applyCardChrome(boolean fullWidth) {
+        if (positionInitialized && lastFullWidthVisual == fullWidth) return;
+        lastFullWidthVisual = fullWidth;
+        Context c = decor.getContext();
+        float radius = fullWidth ? 0f : TwitchUi.dp(c, 10f);
+        int stroke = fullWidth ? Math.max(1, TwitchUi.dp(c, 1f)) : Math.max(1, TwitchUi.dp(c, 1.5f));
+        card.setBackground(TwitchUi.roundedRect(0xFF0E0E10, radius, stroke, 0xFF9147FF));
     }
 
     private void showHud() {
@@ -362,43 +373,122 @@ final class MultiStreamPipOverlay {
         main.postDelayed(hideHudRunnable, HUD_AUTO_HIDE_MS);
     }
 
-    private void applySizeAndClamp() {
-        int parentW = decor.getWidth();
-        int parentH = decor.getHeight();
-        if (parentW <= 0 || parentH <= 0) {
-            parentW = decor.getResources().getDisplayMetrics().widthPixels;
-            parentH = decor.getResources().getDisplayMetrics().heightPixels;
-        }
-        int baseDim = Math.min(parentW, parentH);
-        int w = Math.round((parentW > parentH ? parentW * 0.65f : baseDim) * WIDTH_RATIOS[sizeIndex]);
-        int minW = TwitchUi.dp(decor.getContext(), 136f);
-        int maxW = Math.max(minW, parentW - TwitchUi.dp(decor.getContext(), 16f));
-        w = Math.max(minW, Math.min(maxW, w));
+    private int parentWidth() {
+        int w = decor.getWidth();
+        return w > 0 ? w : decor.getResources().getDisplayMetrics().widthPixels;
+    }
+
+    private int parentHeight() {
+        int h = decor.getHeight();
+        return h > 0 ? h : decor.getResources().getDisplayMetrics().heightPixels;
+    }
+
+    private void applySizeAndClamp(boolean preserveCenter) {
+        int parentW = parentWidth();
+        int parentH = parentHeight();
+        Context ctx = decor.getContext();
+        int minW = TwitchUi.dp(ctx, 120f);
+        int topSafe = TwitchUi.dp(ctx, 28f);
+        int bottomSafe = TwitchUi.dp(ctx, 24f);
+
+        int w = Math.max(minW, Math.min(parentW, Math.round(parentW * currentWidthRatio)));
         int h = Math.round(w * 9f / 16f);
+        int maxH = Math.max(TwitchUi.dp(ctx, 68f), parentH - topSafe - bottomSafe);
+        if (h > maxH) {
+            h = maxH;
+            w = Math.max(minW, Math.min(parentW, Math.round(h * 16f / 9f)));
+        }
 
         FrameLayout.LayoutParams lp = (FrameLayout.LayoutParams) card.getLayoutParams();
+        int oldCx = lp.leftMargin + lp.width / 2;
+        int oldCy = lp.topMargin + lp.height / 2;
+
+        boolean fullWidth = w >= parentW - TwitchUi.dp(ctx, 8f);
+        int hMargin = fullWidth ? 0 : TwitchUi.dp(ctx, 6f);
+        if (fullWidth) {
+            w = parentW;
+            h = Math.min(maxH, Math.round(w * 9f / 16f));
+        }
+
         lp.width = w;
         lp.height = h;
-        int margin = TwitchUi.dp(decor.getContext(), 8f);
-        int topSafe = TwitchUi.dp(decor.getContext(), 40f);
-        int bottomSafe = TwitchUi.dp(decor.getContext(), 56f);
-
         if (!positionInitialized) {
             positionInitialized = true;
-            lp.leftMargin = Math.max(margin, parentW - w - margin);
+            lp.leftMargin = Math.max(hMargin, parentW - w - hMargin);
             lp.topMargin = Math.max(topSafe, Math.round(parentH * 0.34f));
+        } else if (preserveCenter) {
+            lp.leftMargin = oldCx - w / 2;
+            lp.topMargin = oldCy - h / 2;
         }
-        lp.leftMargin = Math.max(margin, Math.min(Math.max(margin, parentW - w - margin), lp.leftMargin));
+        lp.leftMargin = Math.max(hMargin, Math.min(Math.max(hMargin, parentW - w - hMargin), lp.leftMargin));
         lp.topMargin = Math.max(topSafe, Math.min(Math.max(topSafe, parentH - h - bottomSafe), lp.topMargin));
+        applyCardChrome(fullWidth);
         card.setLayoutParams(lp);
     }
 
-    private void setupDragAndTap(View target) {
+    private void setupDragPinchAndTap(Context ctx, View target) {
         final float[] downRaw = new float[2];
         final int[] startMargin = new int[2];
         final boolean[] dragging = {false};
+        final boolean[] pinched = {false};
+
+        ScaleGestureDetector scaleDetector = new ScaleGestureDetector(
+                ctx,
+                new ScaleGestureDetector.SimpleOnScaleGestureListener() {
+                    @Override
+                    public boolean onScaleBegin(ScaleGestureDetector detector) {
+                        pinched[0] = true;
+                        dragging[0] = false;
+                        return true;
+                    }
+
+                    @Override
+                    public boolean onScale(ScaleGestureDetector detector) {
+                        float factor = detector.getScaleFactor();
+                        if (Float.isNaN(factor) || Float.isInfinite(factor) || factor <= 0f) return false;
+                        int parentW = parentWidth();
+                        int parentH = parentHeight();
+                        int minW = TwitchUi.dp(ctx, 120f);
+                        int topSafe = TwitchUi.dp(ctx, 28f);
+                        int bottomSafe = TwitchUi.dp(ctx, 24f);
+                        int maxH = Math.max(TwitchUi.dp(ctx, 68f), parentH - topSafe - bottomSafe);
+
+                        FrameLayout.LayoutParams lp = (FrameLayout.LayoutParams) card.getLayoutParams();
+                        int cx = lp.leftMargin + lp.width / 2;
+                        int cy = lp.topMargin + lp.height / 2;
+
+                        int nextW = Math.max(minW, Math.min(parentW, Math.round(lp.width * factor)));
+                        int nextH = Math.round(nextW * 9f / 16f);
+                        if (nextH > maxH) {
+                            nextH = maxH;
+                            nextW = Math.max(minW, Math.min(parentW, Math.round(nextH * 16f / 9f)));
+                        }
+
+                        boolean fullWidth = nextW >= parentW - TwitchUi.dp(ctx, 8f);
+                        int hMargin = fullWidth ? 0 : TwitchUi.dp(ctx, 6f);
+                        if (fullWidth) {
+                            nextW = parentW;
+                            nextH = Math.min(maxH, Math.round(nextW * 9f / 16f));
+                        }
+
+                        lp.width = nextW;
+                        lp.height = nextH;
+                        lp.leftMargin = Math.max(hMargin, Math.min(
+                                Math.max(hMargin, parentW - nextW - hMargin),
+                                cx - nextW / 2));
+                        lp.topMargin = Math.max(topSafe, Math.min(
+                                Math.max(topSafe, parentH - nextH - bottomSafe),
+                                cy - nextH / 2));
+                        currentWidthRatio = Math.max(0.25f, Math.min(1f, nextW / (float) Math.max(1, parentW)));
+                        applyCardChrome(fullWidth);
+                        card.setLayoutParams(lp);
+                        sizeBtn.setText(labelForRatio(currentWidthRatio));
+                        return true;
+                    }
+                });
 
         target.setOnTouchListener((v, event) -> {
+            scaleDetector.onTouchEvent(event);
             FrameLayout.LayoutParams lp = (FrameLayout.LayoutParams) card.getLayoutParams();
             switch (event.getActionMasked()) {
                 case MotionEvent.ACTION_DOWN:
@@ -407,21 +497,32 @@ final class MultiStreamPipOverlay {
                     startMargin[0] = lp.leftMargin;
                     startMargin[1] = lp.topMargin;
                     dragging[0] = false;
+                    pinched[0] = false;
+                    return true;
+                case MotionEvent.ACTION_POINTER_DOWN:
+                    pinched[0] = true;
+                    dragging[0] = false;
                     return true;
                 case MotionEvent.ACTION_MOVE:
+                    if (scaleDetector.isInProgress() || event.getPointerCount() > 1) {
+                        pinched[0] = true;
+                        return true;
+                    }
+                    if (pinched[0]) return true;
                     float dx = event.getRawX() - downRaw[0];
                     float dy = event.getRawY() - downRaw[1];
                     if (!dragging[0] && (Math.abs(dx) > touchSlop || Math.abs(dy) > touchSlop)) {
                         dragging[0] = true;
                     }
                     if (dragging[0]) {
-                        int parentW = decor.getWidth();
-                        int parentH = decor.getHeight();
-                        int margin = TwitchUi.dp(decor.getContext(), 6f);
-                        int topSafe = TwitchUi.dp(decor.getContext(), 28f);
-                        int bottomSafe = TwitchUi.dp(decor.getContext(), 24f);
-                        lp.leftMargin = Math.max(margin, Math.min(
-                                Math.max(margin, parentW - lp.width - margin),
+                        int parentW = parentWidth();
+                        int parentH = parentHeight();
+                        boolean fullWidth = lp.width >= parentW - TwitchUi.dp(ctx, 8f);
+                        int hMargin = fullWidth ? 0 : TwitchUi.dp(ctx, 6f);
+                        int topSafe = TwitchUi.dp(ctx, 28f);
+                        int bottomSafe = TwitchUi.dp(ctx, 24f);
+                        lp.leftMargin = Math.max(hMargin, Math.min(
+                                Math.max(hMargin, parentW - lp.width - hMargin),
                                 Math.round(startMargin[0] + dx)));
                         lp.topMargin = Math.max(topSafe, Math.min(
                                 Math.max(topSafe, parentH - lp.height - bottomSafe),
@@ -429,8 +530,17 @@ final class MultiStreamPipOverlay {
                         card.setLayoutParams(lp);
                     }
                     return true;
+                case MotionEvent.ACTION_POINTER_UP:
+                    if (event.getPointerCount() == 2) {
+                        int keepIdx = event.getActionIndex() == 0 ? 1 : 0;
+                        downRaw[0] = event.getX(keepIdx) + card.getLeft();
+                        downRaw[1] = event.getY(keepIdx) + card.getTop();
+                        startMargin[0] = lp.leftMargin;
+                        startMargin[1] = lp.topMargin;
+                    }
+                    return true;
                 case MotionEvent.ACTION_UP:
-                    if (!dragging[0]) {
+                    if (!dragging[0] && !pinched[0]) {
                         if (hudOverlay.getVisibility() == View.VISIBLE) {
                             hideHud();
                         } else {

@@ -93,6 +93,9 @@ public class KizuExtraSettingsFragment extends PreferenceFragment {
             addSwitch(screen, KizuSettings.MULTI_STREAM_BUTTON.key, KizuSettings.MULTI_STREAM_BUTTON.defaultValue,
                     "マルチ視聴ボタン",
                     "プレイヤー右上に複数配信の同時視聴（サブ小窓 / 最大4枠マルチビュー）ボタンを表示します。");
+            addSwitch(screen, KizuSettings.MULTI_STREAM_AUDIO_LOCK.key, KizuSettings.MULTI_STREAM_AUDIO_LOCK.defaultValue,
+                    "マルチ視聴の音声チャンネルを固定",
+                    "オンにすると、マルチビューで別枠をタップしても固定した配信の音声を維持します。マルチビュー画面内の「音声」ボタンからも切り替えられます。");
             addMultiStream(screen);
 
             addSwitch(screen, KizuSettings.HIDE_CHAT_MENU_BUTTON.key, KizuSettings.HIDE_CHAT_MENU_BUTTON.defaultValue,

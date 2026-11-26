@@ -4,19 +4,23 @@ import android.app.Activity;
 import android.app.Dialog;
 import android.content.Context;
 import android.graphics.Typeface;
+import android.os.Handler;
+import android.os.Looper;
 import android.util.Log;
 import android.util.TypedValue;
 import android.view.Gravity;
-import android.view.ViewGroup;
+import android.view.View;
 import android.widget.LinearLayout;
 import android.widget.TextView;
 
+import java.lang.ref.WeakReference;
 import java.util.ArrayList;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Set;
 
 import app.morphe.extension.Utils;
+import app.morphe.extension.ads.BlockAdsPatch;
 import app.morphe.extension.channelpoints.ChannelPoints;
 import app.morphe.extension.settings.SettingsUi;
 import app.morphe.extension.settings.TwitchUi;
@@ -181,7 +185,10 @@ public final class MultiStreamManager {
     }
 
     static void onMultiViewClosed(MultiStreamDialog dialog) {
-        if (activeDialog == dialog) activeDialog = null;
+        if (activeDialog == dialog) {
+            activeDialog = null;
+            BlockAdsPatch.setNativePlaybackSuppressed(false);
+        }
     }
 
     private static void openMultiView(Activity activity, List<String> initialLogins) {
@@ -190,12 +197,65 @@ public final class MultiStreamManager {
                 activeDialog.dismiss();
                 activeDialog = null;
             }
+            stopAndCloseNativePlayer(activity);
             MultiStreamDialog dlg = new MultiStreamDialog(activity, initialLogins);
             activeDialog = dlg;
             dlg.show(true);
         } catch (Throwable t) {
             Log.e(TAG, "openMultiView failed", t);
         }
+    }
+
+    /**
+     * Immediately mutes/pauses Twitch's underlying native player and closes its theatre/mini-player
+     * UI so background audio and video decoding do not overlap Mode B Multi-View.
+     */
+    private static void stopAndCloseNativePlayer(Activity activity) {
+        BlockAdsPatch.setNativePlaybackSuppressed(true);
+        if (activity == null || activity.getWindow() == null) return;
+        try {
+            View decor = activity.getWindow().getDecorView();
+            if (decor == null) return;
+            if (tryClickCloseButton(decor)) return;
+
+            int playerDelegateId = Utils.getResourceId(activity, "player_view_delegate", "id");
+            View playerView = playerDelegateId != 0 ? decor.findViewById(playerDelegateId) : null;
+            if (playerView == null || !playerView.isShown()) return;
+
+            int backId = Utils.getResourceId(activity, "back_button", "id");
+            View backBtn = backId != 0 ? decor.findViewById(backId) : null;
+            if (backBtn != null && backBtn.isClickable()) {
+                backBtn.performClick();
+                final WeakReference<Activity> ref = new WeakReference<>(activity);
+                Handler h = new Handler(Looper.getMainLooper());
+                h.postDelayed(() -> {
+                    Activity cur = ref.get();
+                    if (cur == null || cur.isFinishing() || cur.isDestroyed()) return;
+                    View d = cur.getWindow() == null ? null : cur.getWindow().getDecorView();
+                    if (d != null) tryClickCloseButton(d);
+                    BlockAdsPatch.setNativePlaybackSuppressed(true);
+                }, 220L);
+            }
+        } catch (Throwable ignored) {}
+    }
+
+    private static boolean tryClickCloseButton(View root) {
+        String[] closeIds = {
+                "mini_player_close_button",
+                "close_mini_player_button",
+                "player_close_button",
+                "close_button",
+        };
+        for (String name : closeIds) {
+            int id = Utils.getResourceId(root.getContext(), name, "id");
+            if (id == 0) continue;
+            View v = root.findViewById(id);
+            if (v != null && v.isShown() && v.isClickable()) {
+                v.performClick();
+                return true;
+            }
+        }
+        return false;
     }
 
     public static void onActivityPaused(Activity activity) {

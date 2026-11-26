@@ -5,6 +5,9 @@ import android.os.Handler;
 import android.os.Looper;
 import android.view.View;
 
+import java.lang.ref.WeakReference;
+import java.lang.reflect.Method;
+
 import app.morphe.extension.Utils;
 import app.morphe.extension.settings.Settings;
 
@@ -26,8 +29,45 @@ public final class BlockAdsPatch {
     private static final String BLOCKED_URL = "https://127.0.0.1:1/";
 
     private static final Handler mainHandler = new Handler(Looper.getMainLooper());
+    private static volatile WeakReference<Object> lastEventPlayer = new WeakReference<>(null);
+    private static volatile WeakReference<Object> lastIvsMediaPlayer = new WeakReference<>(null);
+    private static volatile boolean nativePlaybackSuppressed;
 
     private BlockAdsPatch() {
+    }
+
+    /**
+     * Suppresses (mutes and pauses) Twitch's underlying native stream player while dedicated
+     * Multi-View is open so its audio never overlaps the multi-stream slots.
+     */
+    public static void setNativePlaybackSuppressed(boolean suppressed) {
+        nativePlaybackSuppressed = suppressed;
+        Object eventPlayer = lastEventPlayer.get();
+        Object ivsPlayer = lastIvsMediaPlayer.get();
+        if (suppressed) {
+            if (eventPlayer != null) {
+                try { PlayerEvents.setMuted(eventPlayer, true); } catch (Throwable ignored) {}
+                invokeNoArg(eventPlayer, "pause");
+            }
+            if (ivsPlayer != null) {
+                invokeFloatArg(ivsPlayer, "setVolume", 0f);
+                invokeNoArg(ivsPlayer, "pause");
+            }
+        }
+    }
+
+    private static void invokeNoArg(Object target, String name) {
+        try {
+            Method m = target.getClass().getMethod(name);
+            m.invoke(target);
+        } catch (Throwable ignored) {}
+    }
+
+    private static void invokeFloatArg(Object target, String name, float value) {
+        try {
+            Method m = target.getClass().getMethod(name, float.class);
+            m.invoke(target, value);
+        } catch (Throwable ignored) {}
     }
 
     private static boolean isEnabled() {
@@ -76,6 +116,13 @@ public final class BlockAdsPatch {
      */
     public static boolean onPlayerEvent(Object player, View renderView, Object event) {
         try {
+            if (player != null) {
+                lastEventPlayer = new WeakReference<>(player);
+                if (nativePlaybackSuppressed) {
+                    try { PlayerEvents.setMuted(player, true); } catch (Throwable ignored) {}
+                    invokeNoArg(player, "pause");
+                }
+            }
             int type = PlayerEvents.type(event);
             if (type == PlayerEvents.OTHER) return false;
 
@@ -185,6 +232,9 @@ public final class BlockAdsPatch {
      * that loads a live stream's playlist.
      */
     public static void preload(Object mediaPlayer, Uri uri, Object listener) {
+        if (mediaPlayer != null) {
+            lastIvsMediaPlayer = new WeakReference<>(mediaPlayer);
+        }
         StreamProxy.preload(mediaPlayer, uri, listener);
     }
 }

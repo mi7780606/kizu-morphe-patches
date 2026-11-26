@@ -61,5 +61,9 @@ public final class KizuSettings {
     public static final BooleanSetting MULTI_STREAM_BUTTON =
             new BooleanSetting("kizu_multi_stream_button", true);
 
+    /** マルチビュー時に音声チャンネルを固定する（オフでタップした枠に自動追従） */
+    public static final BooleanSetting MULTI_STREAM_AUDIO_LOCK =
+            new BooleanSetting("kizu_multi_stream_audio_lock", false);
+
     private KizuSettings() {}
 }

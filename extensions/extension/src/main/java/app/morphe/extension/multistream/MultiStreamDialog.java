@@ -5,7 +5,9 @@ import android.app.Dialog;
 import android.content.Context;
 import android.content.res.Configuration;
 import android.graphics.Color;
+import android.graphics.Insets;
 import android.graphics.Typeface;
+import android.os.Build;
 import android.os.Handler;
 import android.os.Looper;
 import android.os.SystemClock;
@@ -17,6 +19,7 @@ import android.view.View;
 import android.view.ViewGroup;
 import android.view.ViewParent;
 import android.view.Window;
+import android.view.WindowInsets;
 import android.view.WindowManager;
 import android.view.inputmethod.EditorInfo;
 import android.view.inputmethod.InputMethodManager;
@@ -38,14 +41,17 @@ import app.morphe.extension.KizuRuntime;
 import app.morphe.extension.settings.SettingsUi;
 import app.morphe.extension.settings.TwitchUi;
 import io.github.bakwudo.uyu.extension.danmaku.DanmakuView;
+import io.github.bakwudo.uyu.extension.settings.KizuSettings;
 
 /**
- * Mode B: Dedicated fullscreen Multi-View supporting up to 4 simultaneous live streams.
+ * Mode B: Dedicated Multi-View supporting up to 4 simultaneous live streams.
  *
- * - Landscape: full-bleed multi-stream grid + proportional Danmaku on the focused stream (no chat input).
- * - Portrait: multi-stream grid + proportional Danmaku on the focused stream + compact comment input bar only.
- * - Audio: tapping a slot focuses it (unmuted, others auto-muted); each slot's speaker button allows
- *   independent simultaneous unmuting; double-tapping a slot swaps it with Slot 0 (main).
+ * - Non-fullscreen window respecting system status/navigation bars & display cutouts.
+ * - Portrait: non-overlapping top header, streams tightly top-packed with 1dp hairline dividers
+ *   and zero blank gaps between videos, proportional Danmaku on focused stream, compact comment input only.
+ * - Landscape: full video grid with auto-hiding top header, proportional Danmaku, no chat input.
+ * - Audio: configurable right inside Mode B between "Tap-to-Switch" and "Lock Audio Channel",
+ *   plus per-slot simultaneous unmute buttons.
  */
 final class MultiStreamDialog {
     static final int MAX_SLOTS = 4;
@@ -58,12 +64,14 @@ final class MultiStreamDialog {
     private final List<StreamSlot> slots = new ArrayList<>(MAX_SLOTS);
 
     private final FrameLayout rootFrame;
+    private final LinearLayout mainColumn;
+    private final LinearLayout topBar;
     private final FrameLayout videoArea;
     private final LinearLayout commentBar;
     private final EditText commentInput;
     private final TextView sendBtn;
-    private final LinearLayout topBar;
     private final TextView topTitle;
+    private final TextView audioModeBtn;
     private final TextView layoutBtn;
     private final TextView danmakuToggleBtn;
     private final TextView addBtn;
@@ -75,6 +83,8 @@ final class MultiStreamDialog {
     private final Runnable hideHudRunnable = this::hideHud;
 
     private int focusedIndex = -1;
+    private String lockedAudioLogin;
+    private boolean allMutedInLockMode;
     private boolean emphasisLayout = true;
     private boolean danmakuEnabled = true;
     private boolean hudVisible = true;
@@ -82,20 +92,76 @@ final class MultiStreamDialog {
 
     MultiStreamDialog(Activity activity, List<String> initialLogins) {
         this.activityRef = new WeakReference<>(activity);
-        this.dialog = new Dialog(activity, android.R.style.Theme_Black_NoTitleBar_Fullscreen);
+        // Non-fullscreen theme so status bar, cutout, and navigation/tab bars are never covered.
+        this.dialog = new Dialog(activity, android.R.style.Theme_Black_NoTitleBar);
 
         Window w = dialog.getWindow();
         if (w != null) {
-            w.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
+            w.clearFlags(WindowManager.LayoutParams.FLAG_FULLSCREEN);
+            w.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON
+                    | WindowManager.LayoutParams.FLAG_DRAWS_SYSTEM_BAR_BACKGROUNDS);
+            w.setStatusBarColor(0xFF0E0E10);
+            w.setNavigationBarColor(0xFF0E0E10);
             w.setSoftInputMode(WindowManager.LayoutParams.SOFT_INPUT_ADJUST_RESIZE
                     | WindowManager.LayoutParams.SOFT_INPUT_STATE_HIDDEN);
+            w.setLayout(WindowManager.LayoutParams.MATCH_PARENT, WindowManager.LayoutParams.MATCH_PARENT);
         }
 
         rootFrame = new FrameLayout(activity);
         rootFrame.setBackgroundColor(0xFF0E0E10);
+        applySafeSystemInsets(rootFrame);
 
-        LinearLayout mainColumn = new LinearLayout(activity);
+        mainColumn = new LinearLayout(activity);
         mainColumn.setOrientation(LinearLayout.VERTICAL);
+
+        // Top control bar: docked cleanly above videoArea in Portrait (never overlapping Slot 0),
+        // auto-hides on tap in Landscape.
+        topBar = new LinearLayout(activity);
+        topBar.setOrientation(LinearLayout.HORIZONTAL);
+        topBar.setGravity(Gravity.CENTER_VERTICAL);
+        topBar.setBackgroundColor(0xFF141418);
+        topBar.setPadding(TwitchUi.dp(activity, 8f), TwitchUi.dp(activity, 6f),
+                TwitchUi.dp(activity, 8f), TwitchUi.dp(activity, 6f));
+
+        TextView backBtn = topActionChip(activity, "←", v -> dismiss());
+        topBar.addView(backBtn);
+
+        topTitle = new TextView(activity);
+        topTitle.setTextColor(Color.WHITE);
+        topTitle.setTextSize(TypedValue.COMPLEX_UNIT_SP, 13.5f);
+        topTitle.setTypeface(Typeface.DEFAULT_BOLD);
+        topTitle.setSingleLine(true);
+        topTitle.setEllipsize(TextUtils.TruncateAt.END);
+        topTitle.setPadding(TwitchUi.dp(activity, 6f), 0, TwitchUi.dp(activity, 4f), 0);
+        topBar.addView(topTitle, new LinearLayout.LayoutParams(0, -2, 1f));
+
+        audioModeBtn = topActionChip(activity, "音声", v -> openAudioSettingsSheet());
+        topBar.addView(audioModeBtn);
+
+        toPipBtn = topActionChip(activity, "小窓", v -> minimizeToPip());
+        topBar.addView(toPipBtn);
+
+        layoutBtn = topActionChip(activity, "⊞", v -> {
+            emphasisLayout = !emphasisLayout;
+            relayoutSlots();
+            updateTopBarState();
+            scheduleHudHide();
+        });
+        topBar.addView(layoutBtn);
+
+        danmakuToggleBtn = topActionChip(activity, "弾幕", v -> {
+            danmakuEnabled = !danmakuEnabled;
+            applyDanmakuState();
+            updateTopBarState();
+            scheduleHudHide();
+        });
+        topBar.addView(danmakuToggleBtn);
+
+        addBtn = topActionChip(activity, "＋", v -> openAddChannelPicker());
+        addBtn.setBackground(TwitchUi.roundedRect(0xFF9147FF, TwitchUi.dp(activity, 6f), 0, 0));
+        topBar.addView(addBtn);
+
+        mainColumn.addView(topBar, new LinearLayout.LayoutParams(-1, -2));
 
         videoArea = new FrameLayout(activity);
         videoArea.setBackgroundColor(0xFF0E0E10);
@@ -107,7 +173,7 @@ final class MultiStreamDialog {
         });
 
         emptyHint = new TextView(activity);
-        emptyHint.setText("右上の「＋追加」から視聴する配信を選んでください（最大4枠）");
+        emptyHint.setText("右上の「＋」から視聴する配信を選んでください（最大4枠）");
         emptyHint.setTextColor(0xFFADADB8);
         emptyHint.setTextSize(TypedValue.COMPLEX_UNIT_SP, 14f);
         emptyHint.setGravity(Gravity.CENTER);
@@ -116,7 +182,7 @@ final class MultiStreamDialog {
 
         mainColumn.addView(videoArea, new LinearLayout.LayoutParams(-1, 0, 1f));
 
-        // Portrait-only compact comment input bar (no scrolling chat list; hidden completely in Landscape).
+        // Portrait-only compact comment input bar (no scrolling chat list; GONE in Landscape).
         commentBar = new LinearLayout(activity);
         commentBar.setOrientation(LinearLayout.HORIZONTAL);
         commentBar.setGravity(Gravity.CENTER_VERTICAL);
@@ -145,52 +211,6 @@ final class MultiStreamDialog {
         mainColumn.addView(commentBar, new LinearLayout.LayoutParams(-1, -2));
         rootFrame.addView(mainColumn, new FrameLayout.LayoutParams(-1, -1));
 
-        // Floating auto-hiding top control bar
-        topBar = new LinearLayout(activity);
-        topBar.setOrientation(LinearLayout.HORIZONTAL);
-        topBar.setGravity(Gravity.CENTER_VERTICAL);
-        topBar.setBackgroundColor(0xCC0E0E10);
-        topBar.setPadding(TwitchUi.dp(activity, 10f), TwitchUi.dp(activity, 8f),
-                TwitchUi.dp(activity, 10f), TwitchUi.dp(activity, 8f));
-
-        TextView backBtn = topActionChip(activity, "←", v -> dismiss());
-        topBar.addView(backBtn);
-
-        topTitle = new TextView(activity);
-        topTitle.setTextColor(Color.WHITE);
-        topTitle.setTextSize(TypedValue.COMPLEX_UNIT_SP, 14.5f);
-        topTitle.setTypeface(Typeface.DEFAULT_BOLD);
-        topTitle.setSingleLine(true);
-        topTitle.setEllipsize(TextUtils.TruncateAt.END);
-        topTitle.setPadding(TwitchUi.dp(activity, 8f), 0, TwitchUi.dp(activity, 6f), 0);
-        topBar.addView(topTitle, new LinearLayout.LayoutParams(0, -2, 1f));
-
-        toPipBtn = topActionChip(activity, "小窓", v -> minimizeToPip());
-        topBar.addView(toPipBtn);
-
-        layoutBtn = topActionChip(activity, "⊞", v -> {
-            emphasisLayout = !emphasisLayout;
-            relayoutSlots();
-            updateTopBarState();
-            scheduleHudHide();
-        });
-        topBar.addView(layoutBtn);
-
-        danmakuToggleBtn = topActionChip(activity, "弾幕", v -> {
-            danmakuEnabled = !danmakuEnabled;
-            applyDanmakuState();
-            updateTopBarState();
-            scheduleHudHide();
-        });
-        topBar.addView(danmakuToggleBtn);
-
-        addBtn = topActionChip(activity, "＋追加", v -> openAddChannelPicker());
-        addBtn.setBackground(TwitchUi.roundedRect(0xFF9147FF, TwitchUi.dp(activity, 6f), 0, 0));
-        topBar.addView(addBtn);
-
-        rootFrame.addView(topBar, new FrameLayout.LayoutParams(-1, -2, Gravity.TOP));
-
-        // Shared proportional DanmakuView attached dynamically onto the currently focused slot's 16:9 video box.
         danmakuView = new DanmakuView(activity);
         danmakuView.setClickable(false);
         danmakuView.setFocusable(false);
@@ -211,6 +231,7 @@ final class MultiStreamDialog {
             }
         }
         if (!slots.isEmpty()) {
+            lockedAudioLogin = slots.get(0).login;
             setFocus(0);
         }
         updateOrientationUi();
@@ -218,9 +239,35 @@ final class MultiStreamDialog {
         applyDanmakuState();
     }
 
+    @SuppressWarnings("deprecation")
+    private static void applySafeSystemInsets(View target) {
+        target.setOnApplyWindowInsetsListener((v, insets) -> {
+            int l, t, r, b;
+            if (Build.VERSION.SDK_INT >= 30) {
+                Insets sys = insets.getInsets(WindowInsets.Type.systemBars() | WindowInsets.Type.displayCutout());
+                Insets ime = insets.getInsets(WindowInsets.Type.ime());
+                l = sys.left;
+                t = sys.top;
+                r = sys.right;
+                b = Math.max(sys.bottom, ime.bottom);
+            } else {
+                l = insets.getSystemWindowInsetLeft();
+                t = insets.getSystemWindowInsetTop();
+                r = insets.getSystemWindowInsetRight();
+                b = insets.getSystemWindowInsetBottom();
+            }
+            if (v.getPaddingLeft() != l || v.getPaddingTop() != t
+                    || v.getPaddingRight() != r || v.getPaddingBottom() != b) {
+                v.setPadding(l, t, r, b);
+            }
+            return insets;
+        });
+    }
+
     void show(boolean promptAddIfUnderTwo) {
         if (dismissed) return;
         dialog.show();
+        rootFrame.requestApplyInsets();
         showHud();
         if (promptAddIfUnderTwo && slots.size() < 2) {
             main.postDelayed(this::openAddChannelPicker, 180L);
@@ -266,6 +313,169 @@ final class MultiStreamDialog {
         MultiStreamManager.onMultiViewClosed(this);
     }
 
+    private void openAudioSettingsSheet() {
+        Activity act = activityRef.get();
+        if (act == null || dismissed) return;
+
+        Dialog sheet = TwitchUi.createBottomSheet(act);
+        int pad = TwitchUi.dp(act, 16f);
+
+        LinearLayout root = new LinearLayout(act);
+        root.setOrientation(LinearLayout.VERTICAL);
+        root.setPadding(pad, 0, pad, pad);
+        root.addView(TwitchUi.dragHandle(act));
+
+        LinearLayout header = new LinearLayout(act);
+        header.setOrientation(LinearLayout.HORIZONTAL);
+        header.setGravity(Gravity.CENTER_VERTICAL);
+        header.setPadding(0, TwitchUi.dp(act, 4f), 0, TwitchUi.dp(act, 10f));
+        TextView title = new TextView(act);
+        title.setText("マルチ視聴の音声設定");
+        title.setTextColor(SettingsUi.primaryTextColor(act));
+        title.setTextSize(TypedValue.COMPLEX_UNIT_SP, 17f);
+        title.setTypeface(Typeface.DEFAULT_BOLD);
+        header.addView(title, new LinearLayout.LayoutParams(0, -2, 1f));
+        header.addView(TwitchUi.createCloseButton(act, sheet::dismiss));
+        root.addView(header);
+
+        boolean lockMode = KizuSettings.MULTI_STREAM_AUDIO_LOCK.get();
+
+        TextView modeLabel = new TextView(act);
+        modeLabel.setText("音声の切り替え方式");
+        modeLabel.setTextColor(SettingsUi.secondaryTextColor(act));
+        modeLabel.setTextSize(TypedValue.COMPLEX_UNIT_SP, 12.5f);
+        modeLabel.setTypeface(Typeface.DEFAULT_BOLD);
+        modeLabel.setPadding(0, 0, 0, TwitchUi.dp(act, 6f));
+        root.addView(modeLabel);
+
+        root.addView(buildModeRow(act,
+                "タップした配信に切り替え",
+                "枠をタップすると音声もその配信へ自動で切り替わります。",
+                !lockMode,
+                () -> {
+                    KizuSettings.MULTI_STREAM_AUDIO_LOCK.save(false);
+                    allMutedInLockMode = false;
+                    applyAudioFocus();
+                    updateTopBarState();
+                    sheet.dismiss();
+                }));
+
+        root.addView(buildModeRow(act,
+                "音声チャンネルを固定",
+                "別枠をタップして弾幕やコメント送信先を変えても、固定した配信の音声を維持します。",
+                lockMode,
+                () -> {
+                    KizuSettings.MULTI_STREAM_AUDIO_LOCK.save(true);
+                    if ((lockedAudioLogin == null || findSlotByLogin(lockedAudioLogin) < 0)
+                            && focusedIndex >= 0 && focusedIndex < slots.size()) {
+                        lockedAudioLogin = slots.get(focusedIndex).login;
+                    }
+                    allMutedInLockMode = false;
+                    applyAudioFocus();
+                    updateTopBarState();
+                    sheet.dismiss();
+                }));
+
+        if (!slots.isEmpty()) {
+            View div = TwitchUi.divider(act);
+            LinearLayout.LayoutParams dLp = new LinearLayout.LayoutParams(-1, Math.max(1, TwitchUi.dp(act, 0.75f)));
+            dLp.topMargin = TwitchUi.dp(act, 10f);
+            dLp.bottomMargin = TwitchUi.dp(act, 10f);
+            root.addView(div, dLp);
+
+            TextView chanLabel = new TextView(act);
+            chanLabel.setText("音声を固定するチャンネルを選択（タップで固定ON）");
+            chanLabel.setTextColor(SettingsUi.secondaryTextColor(act));
+            chanLabel.setTextSize(TypedValue.COMPLEX_UNIT_SP, 12.5f);
+            chanLabel.setTypeface(Typeface.DEFAULT_BOLD);
+            chanLabel.setPadding(0, 0, 0, TwitchUi.dp(act, 6f));
+            root.addView(chanLabel);
+
+            for (StreamSlot slot : slots) {
+                boolean selected = lockMode && !allMutedInLockMode && slot.login.equals(lockedAudioLogin);
+                root.addView(buildChannelAudioRow(act, "🔊 " + slot.displayName, selected, () -> {
+                    KizuSettings.MULTI_STREAM_AUDIO_LOCK.save(true);
+                    lockedAudioLogin = slot.login;
+                    allMutedInLockMode = false;
+                    for (StreamSlot other : slots) other.pinnedUnmuted = false;
+                    applyAudioFocus();
+                    updateTopBarState();
+                    sheet.dismiss();
+                }));
+            }
+
+            boolean mutedAll = lockMode && allMutedInLockMode;
+            root.addView(buildChannelAudioRow(act, "🔇 すべてミュートで固定", mutedAll, () -> {
+                KizuSettings.MULTI_STREAM_AUDIO_LOCK.save(true);
+                allMutedInLockMode = true;
+                for (StreamSlot other : slots) other.pinnedUnmuted = false;
+                applyAudioFocus();
+                updateTopBarState();
+                sheet.dismiss();
+            }));
+        }
+
+        TwitchUi.prepareBottomSheet(sheet, act, root);
+        sheet.setContentView(root);
+        sheet.show();
+    }
+
+    private static View buildModeRow(Context c, String titleText, String descText,
+                                     boolean selected, Runnable onClick) {
+        LinearLayout box = new LinearLayout(c);
+        box.setOrientation(LinearLayout.VERTICAL);
+        box.setPadding(TwitchUi.dp(c, 12f), TwitchUi.dp(c, 10f), TwitchUi.dp(c, 12f), TwitchUi.dp(c, 10f));
+        int stroke = selected ? Math.max(2, TwitchUi.dp(c, 1.5f)) : Math.max(1, TwitchUi.dp(c, 0.75f));
+        int strokeColor = selected ? SettingsUi.accentColor(c) : SettingsUi.borderColor(c);
+        box.setBackground(TwitchUi.ripple(c,
+                TwitchUi.roundedRect(SettingsUi.alternateBackgroundColor(c), TwitchUi.dp(c, 10f), stroke, strokeColor),
+                TwitchUi.dp(c, 10f)));
+        box.setClickable(true);
+        box.setFocusable(true);
+        box.setOnClickListener(v -> onClick.run());
+
+        TextView title = new TextView(c);
+        title.setText((selected ? "● " : "○ ") + titleText);
+        title.setTextColor(selected ? SettingsUi.accentColor(c) : SettingsUi.primaryTextColor(c));
+        title.setTextSize(TypedValue.COMPLEX_UNIT_SP, 14f);
+        title.setTypeface(Typeface.DEFAULT_BOLD);
+        box.addView(title);
+
+        TextView desc = new TextView(c);
+        desc.setText(descText);
+        desc.setTextColor(SettingsUi.secondaryTextColor(c));
+        desc.setTextSize(TypedValue.COMPLEX_UNIT_SP, 12f);
+        desc.setPadding(0, TwitchUi.dp(c, 3f), 0, 0);
+        box.addView(desc);
+
+        LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(-1, -2);
+        lp.bottomMargin = TwitchUi.dp(c, 8f);
+        box.setLayoutParams(lp);
+        return box;
+    }
+
+    private static View buildChannelAudioRow(Context c, String label, boolean selected, Runnable onClick) {
+        TextView row = new TextView(c);
+        row.setText((selected ? "✓ " : "   ") + label);
+        row.setTextColor(selected ? SettingsUi.accentColor(c) : SettingsUi.primaryTextColor(c));
+        row.setTextSize(TypedValue.COMPLEX_UNIT_SP, 14f);
+        row.setTypeface(selected ? Typeface.DEFAULT_BOLD : Typeface.DEFAULT);
+        row.setPadding(TwitchUi.dp(c, 12f), TwitchUi.dp(c, 10f), TwitchUi.dp(c, 12f), TwitchUi.dp(c, 10f));
+        row.setBackground(TwitchUi.selectableBackground(c));
+        row.setClickable(true);
+        row.setFocusable(true);
+        row.setOnClickListener(v -> onClick.run());
+        return row;
+    }
+
+    private int findSlotByLogin(String login) {
+        if (login == null) return -1;
+        for (int i = 0; i < slots.size(); i++) {
+            if (slots.get(i).login.equals(login)) return i;
+        }
+        return -1;
+    }
+
     private void openAddChannelPicker() {
         if (dismissed || slots.size() >= MAX_SLOTS) return;
         Activity act = activityRef.get();
@@ -297,6 +507,7 @@ final class MultiStreamDialog {
         videoArea.addView(slot.container, new FrameLayout.LayoutParams(0, 0, Gravity.TOP | Gravity.LEFT));
         emptyHint.setVisibility(View.GONE);
 
+        if (lockedAudioLogin == null) lockedAudioLogin = login;
         updateSlotTargetQualities();
         slot.loadStream(targetAutoHeightForSlot(slots.size() - 1));
         if (focusedIndex < 0 || (autoFocusIfFirst && slots.size() == 1)) {
@@ -311,6 +522,7 @@ final class MultiStreamDialog {
     private void removeSlot(StreamSlot slot) {
         int idx = slots.indexOf(slot);
         if (idx < 0) return;
+        boolean wasLocked = slot.login.equals(lockedAudioLogin);
         if (danmakuView.getParent() == slot.videoBox) {
             slot.videoBox.removeView(danmakuView);
         }
@@ -320,12 +532,16 @@ final class MultiStreamDialog {
 
         if (slots.isEmpty()) {
             focusedIndex = -1;
+            lockedAudioLogin = null;
             danmakuView.clear();
             emptyHint.setVisibility(View.VISIBLE);
             commentInput.setHint("コメントを送信...");
         } else {
             int nextFocus = Math.min(focusedIndex, slots.size() - 1);
             if (nextFocus < 0) nextFocus = 0;
+            if (wasLocked) {
+                lockedAudioLogin = slots.get(nextFocus).login;
+            }
             focusedIndex = -1;
             setFocus(nextFocus);
         }
@@ -354,7 +570,9 @@ final class MultiStreamDialog {
         boolean channelChanged = focusedIndex != index;
         focusedIndex = index;
         StreamSlot focused = slots.get(index);
-        focused.explicitlyMuted = false;
+        if (!KizuSettings.MULTI_STREAM_AUDIO_LOCK.get()) {
+            focused.explicitlyMuted = false;
+        }
 
         for (int i = 0; i < slots.size(); i++) {
             slots.get(i).setFocusedVisual(i == focusedIndex);
@@ -380,13 +598,26 @@ final class MultiStreamDialog {
     }
 
     private void applyAudioFocus() {
+        boolean lockMode = KizuSettings.MULTI_STREAM_AUDIO_LOCK.get();
+        if (lockMode && !allMutedInLockMode
+                && (lockedAudioLogin == null || findSlotByLogin(lockedAudioLogin) < 0)
+                && focusedIndex >= 0 && focusedIndex < slots.size()) {
+            lockedAudioLogin = slots.get(focusedIndex).login;
+        }
         for (int i = 0; i < slots.size(); i++) {
             StreamSlot slot = slots.get(i);
-            boolean shouldUnmute = (i == focusedIndex)
-                    ? !slot.explicitlyMuted
-                    : slot.pinnedUnmuted;
+            boolean isLockedOwner = lockMode && !allMutedInLockMode && slot.login.equals(lockedAudioLogin);
+            boolean shouldUnmute;
+            boolean highlightBadge;
+            if (lockMode) {
+                shouldUnmute = isLockedOwner || slot.pinnedUnmuted;
+                highlightBadge = isLockedOwner || slot.pinnedUnmuted;
+            } else {
+                shouldUnmute = (i == focusedIndex) ? !slot.explicitlyMuted : slot.pinnedUnmuted;
+                highlightBadge = i != focusedIndex && slot.pinnedUnmuted;
+            }
             slot.player.setMuted(!shouldUnmute);
-            slot.updateSpeakerButton(shouldUnmute, i != focusedIndex && slot.pinnedUnmuted);
+            slot.updateSpeakerButton(shouldUnmute, isLockedOwner, highlightBadge);
         }
     }
 
@@ -403,7 +634,7 @@ final class MultiStreamDialog {
     }
 
     private int targetAutoHeightForSlot(int slotIndex) {
-        if (slotIndex == 0) return slots.size() >= 3 ? 720 : 0; // 0 = Auto ABR
+        if (slotIndex == 0) return slots.size() >= 3 ? 720 : 0;
         return slots.size() >= 3 ? 360 : 480;
     }
 
@@ -413,7 +644,6 @@ final class MultiStreamDialog {
             dismiss();
             return;
         }
-        // Pick a sub-slot if >= 2 streams are active; otherwise use the focused slot.
         int pipIdx = slots.size() >= 2
                 ? (focusedIndex > 0 ? focusedIndex : 1)
                 : 0;
@@ -449,24 +679,37 @@ final class MultiStreamDialog {
         } catch (Throwable ignored) {}
     }
 
+    private boolean isLandscape() {
+        return rootFrame.getResources().getConfiguration().orientation == Configuration.ORIENTATION_LANDSCAPE;
+    }
+
     private void updateOrientationUi() {
-        boolean landscape = rootFrame.getResources().getConfiguration().orientation
-                == Configuration.ORIENTATION_LANDSCAPE;
-        int want = landscape ? View.GONE : View.VISIBLE;
-        if (commentBar.getVisibility() != want) {
-            commentBar.setVisibility(want);
+        boolean landscape = isLandscape();
+        int commentVis = landscape ? View.GONE : View.VISIBLE;
+        if (commentBar.getVisibility() != commentVis) {
+            commentBar.setVisibility(commentVis);
             if (landscape) hideKeyboard();
+        }
+        // Keep topBar always docked above videoArea in Portrait so it never obscures the top stream;
+        // auto-hide it in Landscape when HUD hides so landscape video uses the entire safe area.
+        if (!landscape && topBar.getVisibility() != View.VISIBLE) {
+            topBar.setVisibility(View.VISIBLE);
+        } else if (landscape) {
+            topBar.setVisibility(hudVisible ? View.VISIBLE : View.GONE);
         }
     }
 
     private void updateTopBarState() {
-        topTitle.setText("マルチ視聴 (" + slots.size() + "/" + MAX_SLOTS + ")");
+        topTitle.setText("マルチ (" + slots.size() + "/" + MAX_SLOTS + ")");
+        boolean lockMode = KizuSettings.MULTI_STREAM_AUDIO_LOCK.get();
+        audioModeBtn.setText(lockMode ? "🔒音声" : "🔊音声");
+        audioModeBtn.setTextColor(lockMode ? 0xFFBF94FF : Color.WHITE);
         boolean canAdd = slots.size() < MAX_SLOTS;
         addBtn.setEnabled(canAdd);
         addBtn.setAlpha(canAdd ? 1f : 0.45f);
         toPipBtn.setVisibility(slots.isEmpty() ? View.GONE : View.VISIBLE);
         layoutBtn.setVisibility(slots.size() >= 2 ? View.VISIBLE : View.GONE);
-        layoutBtn.setText(emphasisLayout ? "⊞ 均等" : "⊞ 強調");
+        layoutBtn.setText(emphasisLayout ? "⊞" : "▤");
         danmakuToggleBtn.setTextColor(danmakuEnabled ? 0xFFBF94FF : 0xAAFFFFFF);
     }
 
@@ -480,7 +723,9 @@ final class MultiStreamDialog {
     private void hideHud() {
         if (dismissed) return;
         hudVisible = false;
-        topBar.setVisibility(View.GONE);
+        if (isLandscape()) {
+            topBar.setVisibility(View.GONE);
+        }
         for (StreamSlot s : slots) s.setHudVisible(false);
     }
 
@@ -500,82 +745,119 @@ final class MultiStreamDialog {
         int h = videoArea.getHeight();
         if (count == 0 || w <= 0 || h <= 0) return;
 
-        int gap = TwitchUi.dp(rootFrame.getContext(), 2f);
+        // Subtle unobtrusive 1dp hairline divider between slots.
+        int div = Math.max(1, TwitchUi.dp(rootFrame.getContext(), 1f));
         boolean landscape = w > h;
 
+        if (!landscape) {
+            layoutPortraitTopPacked(count, w, h, div);
+        } else {
+            layoutLandscape(count, w, h, div);
+        }
+    }
+
+    /**
+     * Portrait mode: packs all stream slots tightly from top = 0 with exact 16:9 heights and a
+     * subtle 1dp hairline divider between them — zero vertical blank gaps between players.
+     */
+    private void layoutPortraitTopPacked(int count, int w, int h, int div) {
+        if (count == 1) {
+            int h0 = Math.min(h, Math.round(w * 9f / 16f));
+            placeSlot(0, 0, 0, w, h0);
+            return;
+        }
+        if (count == 2) {
+            int natural = Math.round(w * 9f / 16f);
+            int eachH = (natural * 2 + div <= h) ? natural : Math.max(1, (h - div) / 2);
+            placeSlot(0, 0, 0, w, eachH);
+            placeSlot(1, 0, eachH + div, w, eachH);
+            return;
+        }
+        if (count == 3) {
+            if (emphasisLayout) {
+                int halfW = Math.max(1, (w - div) / 2);
+                int h0 = Math.round(w * 9f / 16f);
+                int h1 = Math.round(halfW * 9f / 16f);
+                if (h0 + div + h1 > h) {
+                    float scale = (h - div) / (float) Math.max(1, h0 + h1);
+                    h0 = Math.max(1, Math.round(h0 * scale));
+                    h1 = Math.max(1, h - div - h0);
+                }
+                placeSlot(0, 0, 0, w, h0);
+                placeSlot(1, 0, h0 + div, halfW, h1);
+                placeSlot(2, halfW + div, h0 + div, w - div - halfW, h1);
+            } else {
+                int natural = Math.round(w * 9f / 16f);
+                int eachH = (natural * 3 + div * 2 <= h) ? natural : Math.max(1, (h - div * 2) / 3);
+                placeSlot(0, 0, 0, w, eachH);
+                placeSlot(1, 0, eachH + div, w, eachH);
+                placeSlot(2, 0, (eachH + div) * 2, w, eachH);
+            }
+            return;
+        }
+        // 4 slots
+        if (emphasisLayout) {
+            int colW = Math.max(1, (w - div * 2) / 3);
+            int h0 = Math.round(w * 9f / 16f);
+            int h1 = Math.round(colW * 9f / 16f);
+            if (h0 + div + h1 > h) {
+                float scale = (h - div) / (float) Math.max(1, h0 + h1);
+                h0 = Math.max(1, Math.round(h0 * scale));
+                h1 = Math.max(1, h - div - h0);
+            }
+            placeSlot(0, 0, 0, w, h0);
+            placeSlot(1, 0, h0 + div, colW, h1);
+            placeSlot(2, colW + div, h0 + div, colW, h1);
+            placeSlot(3, (colW + div) * 2, h0 + div, w - (colW + div) * 2, h1);
+        } else {
+            int halfW = Math.max(1, (w - div) / 2);
+            int natural = Math.round(halfW * 9f / 16f);
+            int rowH = (natural * 2 + div <= h) ? natural : Math.max(1, (h - div) / 2);
+            placeSlot(0, 0, 0, halfW, rowH);
+            placeSlot(1, halfW + div, 0, w - div - halfW, rowH);
+            placeSlot(2, 0, rowH + div, halfW, rowH);
+            placeSlot(3, halfW + div, rowH + div, w - div - halfW, rowH);
+        }
+    }
+
+    private void layoutLandscape(int count, int w, int h, int div) {
         if (count == 1) {
             placeSlot(0, 0, 0, w, h);
         } else if (count == 2) {
-            if (landscape) {
-                int leftW = emphasisLayout ? Math.round((w - gap) * 0.66f) : (w - gap) / 2;
-                int rightW = w - gap - leftW;
-                placeSlot(0, 0, 0, leftW, h);
-                placeSlot(1, leftW + gap, 0, rightW, h);
-            } else {
-                int topH = emphasisLayout ? Math.round((h - gap) * 0.56f) : (h - gap) / 2;
-                int botH = h - gap - topH;
-                placeSlot(0, 0, 0, w, topH);
-                placeSlot(1, 0, topH + gap, w, botH);
-            }
+            int leftW = emphasisLayout ? Math.round((w - div) * 0.66f) : (w - div) / 2;
+            int rightW = w - div - leftW;
+            placeSlot(0, 0, 0, leftW, h);
+            placeSlot(1, leftW + div, 0, rightW, h);
         } else if (count == 3) {
-            if (landscape) {
-                if (emphasisLayout) {
-                    int leftW = Math.round((w - gap) * 0.64f);
-                    int rightW = w - gap - leftW;
-                    int halfH = (h - gap) / 2;
-                    placeSlot(0, 0, 0, leftW, h);
-                    placeSlot(1, leftW + gap, 0, rightW, halfH);
-                    placeSlot(2, leftW + gap, halfH + gap, rightW, h - gap - halfH);
-                } else {
-                    int colW = (w - gap * 2) / 3;
-                    placeSlot(0, 0, 0, colW, h);
-                    placeSlot(1, colW + gap, 0, colW, h);
-                    placeSlot(2, (colW + gap) * 2, 0, w - (colW + gap) * 2, h);
-                }
+            if (emphasisLayout) {
+                int leftW = Math.round((w - div) * 0.64f);
+                int rightW = w - div - leftW;
+                int halfH = (h - div) / 2;
+                placeSlot(0, 0, 0, leftW, h);
+                placeSlot(1, leftW + div, 0, rightW, halfH);
+                placeSlot(2, leftW + div, halfH + div, rightW, h - div - halfH);
             } else {
-                int topH = Math.round((h - gap) * 0.54f);
-                int botH = h - gap - topH;
-                int halfW = (w - gap) / 2;
-                placeSlot(0, 0, 0, w, topH);
-                placeSlot(1, 0, topH + gap, halfW, botH);
-                placeSlot(2, halfW + gap, topH + gap, w - gap - halfW, botH);
+                int colW = (w - div * 2) / 3;
+                placeSlot(0, 0, 0, colW, h);
+                placeSlot(1, colW + div, 0, colW, h);
+                placeSlot(2, (colW + div) * 2, 0, w - (colW + div) * 2, h);
             }
         } else {
-            // 4 slots
-            if (landscape) {
-                if (emphasisLayout) {
-                    int leftW = Math.round((w - gap) * 0.64f);
-                    int rightW = w - gap - leftW;
-                    int subH = (h - gap * 2) / 3;
-                    placeSlot(0, 0, 0, leftW, h);
-                    placeSlot(1, leftW + gap, 0, rightW, subH);
-                    placeSlot(2, leftW + gap, subH + gap, rightW, subH);
-                    placeSlot(3, leftW + gap, (subH + gap) * 2, rightW, h - (subH + gap) * 2);
-                } else {
-                    int halfW = (w - gap) / 2;
-                    int halfH = (h - gap) / 2;
-                    placeSlot(0, 0, 0, halfW, halfH);
-                    placeSlot(1, halfW + gap, 0, w - gap - halfW, halfH);
-                    placeSlot(2, 0, halfH + gap, halfW, h - gap - halfH);
-                    placeSlot(3, halfW + gap, halfH + gap, w - gap - halfW, h - gap - halfH);
-                }
+            if (emphasisLayout) {
+                int leftW = Math.round((w - div) * 0.64f);
+                int rightW = w - div - leftW;
+                int subH = (h - div * 2) / 3;
+                placeSlot(0, 0, 0, leftW, h);
+                placeSlot(1, leftW + div, 0, rightW, subH);
+                placeSlot(2, leftW + div, subH + div, rightW, subH);
+                placeSlot(3, leftW + div, (subH + div) * 2, rightW, h - (subH + div) * 2);
             } else {
-                if (emphasisLayout) {
-                    int topH = Math.round((h - gap) * 0.55f);
-                    int botH = h - gap - topH;
-                    int colW = (w - gap * 2) / 3;
-                    placeSlot(0, 0, 0, w, topH);
-                    placeSlot(1, 0, topH + gap, colW, botH);
-                    placeSlot(2, colW + gap, topH + gap, colW, botH);
-                    placeSlot(3, (colW + gap) * 2, topH + gap, w - (colW + gap) * 2, botH);
-                } else {
-                    int halfW = (w - gap) / 2;
-                    int halfH = (h - gap) / 2;
-                    placeSlot(0, 0, 0, halfW, halfH);
-                    placeSlot(1, halfW + gap, 0, w - gap - halfW, halfH);
-                    placeSlot(2, 0, halfH + gap, halfW, h - gap - halfH);
-                    placeSlot(3, halfW + gap, halfH + gap, w - gap - halfW, h - gap - halfH);
-                }
+                int halfW = (w - div) / 2;
+                int halfH = (h - div) / 2;
+                placeSlot(0, 0, 0, halfW, halfH);
+                placeSlot(1, halfW + div, 0, w - div - halfW, halfH);
+                placeSlot(2, 0, halfH + div, halfW, h - div - halfH);
+                placeSlot(3, halfW + div, halfH + div, w - div - halfW, h - div - halfH);
             }
         }
     }
@@ -583,27 +865,29 @@ final class MultiStreamDialog {
     private void placeSlot(int index, int left, int top, int width, int height) {
         StreamSlot slot = slots.get(index);
         FrameLayout.LayoutParams lp = (FrameLayout.LayoutParams) slot.container.getLayoutParams();
-        if (lp.leftMargin != left || lp.topMargin != top || lp.width != width || lp.height != height) {
+        int safeW = Math.max(1, width);
+        int safeH = Math.max(1, height);
+        if (lp.leftMargin != left || lp.topMargin != top || lp.width != safeW || lp.height != safeH) {
             lp.leftMargin = left;
             lp.topMargin = top;
-            lp.width = Math.max(1, width);
-            lp.height = Math.max(1, height);
+            lp.width = safeW;
+            lp.height = safeH;
             slot.container.setLayoutParams(lp);
         }
-        slot.fitVideoAspect16x9(width, height);
+        slot.fitVideoAspect16x9(safeW, safeH);
     }
 
     private static TextView topActionChip(Context c, String label, View.OnClickListener onClick) {
         TextView tv = new TextView(c);
         tv.setText(label);
         tv.setTextColor(Color.WHITE);
-        tv.setTextSize(TypedValue.COMPLEX_UNIT_SP, 12.5f);
+        tv.setTextSize(TypedValue.COMPLEX_UNIT_SP, 12f);
         tv.setTypeface(Typeface.DEFAULT_BOLD);
         tv.setGravity(Gravity.CENTER);
-        tv.setPadding(TwitchUi.dp(c, 9f), TwitchUi.dp(c, 5f), TwitchUi.dp(c, 9f), TwitchUi.dp(c, 5f));
+        tv.setPadding(TwitchUi.dp(c, 8f), TwitchUi.dp(c, 5f), TwitchUi.dp(c, 8f), TwitchUi.dp(c, 5f));
         tv.setBackground(TwitchUi.roundedRect(0xFF26262C, TwitchUi.dp(c, 6f), 0, 0));
         LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(-2, -2);
-        lp.leftMargin = TwitchUi.dp(c, 6f);
+        lp.leftMargin = TwitchUi.dp(c, 5f);
         tv.setLayoutParams(lp);
         tv.setClickable(true);
         tv.setFocusable(true);
@@ -657,7 +941,6 @@ final class MultiStreamDialog {
             errorLabel.setOnClickListener(v -> loadStream(targetAutoHeightForSlot(slots.indexOf(this))));
             container.addView(errorLabel, new FrameLayout.LayoutParams(-2, -2, Gravity.CENTER));
 
-            // Per-slot HUD overlay
             slotHud = new LinearLayout(c);
             slotHud.setOrientation(LinearLayout.HORIZONTAL);
             slotHud.setGravity(Gravity.CENTER_VERTICAL);
@@ -674,11 +957,20 @@ final class MultiStreamDialog {
             slotHud.addView(titleBadge, new LinearLayout.LayoutParams(0, -2, 1f));
 
             speakerBtn = slotMiniBtn(c, "🔇", v -> {
-                int idx = slots.indexOf(this);
-                if (idx == focusedIndex) {
-                    explicitlyMuted = !explicitlyMuted;
+                boolean lockMode = KizuSettings.MULTI_STREAM_AUDIO_LOCK.get();
+                if (lockMode) {
+                    if (login.equals(lockedAudioLogin)) {
+                        allMutedInLockMode = !allMutedInLockMode;
+                    } else {
+                        pinnedUnmuted = !pinnedUnmuted;
+                    }
                 } else {
-                    pinnedUnmuted = !pinnedUnmuted;
+                    int idx = slots.indexOf(this);
+                    if (idx == focusedIndex) {
+                        explicitlyMuted = !explicitlyMuted;
+                    } else {
+                        pinnedUnmuted = !pinnedUnmuted;
+                    }
                 }
                 applyAudioFocus();
                 scheduleHudHide();
@@ -769,11 +1061,13 @@ final class MultiStreamDialog {
 
         void fitVideoAspect16x9(int cellW, int cellH) {
             if (cellW <= 0 || cellH <= 0) return;
-            int fitW = cellW;
-            int fitH = Math.round(cellW * 9f / 16f);
-            if (fitH > cellH) {
-                fitH = cellH;
-                fitW = Math.round(cellH * 16f / 9f);
+            int innerW = Math.max(1, cellW - container.getPaddingLeft() - container.getPaddingRight());
+            int innerH = Math.max(1, cellH - container.getPaddingTop() - container.getPaddingBottom());
+            int fitW = innerW;
+            int fitH = Math.round(innerW * 9f / 16f);
+            if (fitH > innerH) {
+                fitH = innerH;
+                fitW = Math.round(innerH * 16f / 9f);
             }
             FrameLayout.LayoutParams lp = (FrameLayout.LayoutParams) videoBox.getLayoutParams();
             if (lp.width != fitW || lp.height != fitH) {
@@ -786,8 +1080,9 @@ final class MultiStreamDialog {
 
         void setFocusedVisual(boolean focused) {
             Context c = container.getContext();
-            int stroke = focused ? Math.max(2, TwitchUi.dp(c, 2f)) : Math.max(1, TwitchUi.dp(c, 0.75f));
-            int borderColor = focused ? 0xFF9147FF : 0xFF26262C;
+            // Subtle unobtrusive hairline divider when unfocused; thin Twitch purple highlight when focused.
+            int stroke = focused ? Math.max(2, TwitchUi.dp(c, 1.5f)) : Math.max(1, TwitchUi.dp(c, 0.75f));
+            int borderColor = focused ? 0xFF9147FF : 0xFF2E2E35;
             container.setPadding(stroke, stroke, stroke, stroke);
             container.setBackground(TwitchUi.roundedRect(Color.BLACK, 0f, stroke, borderColor));
         }
@@ -796,10 +1091,14 @@ final class MultiStreamDialog {
             titleBadge.setText("● " + displayName + " · " + player.getCurrentQualityLabel());
         }
 
-        void updateSpeakerButton(boolean unmuted, boolean pinnedSimultaneous) {
-            speakerBtn.setText(unmuted ? "🔊" : "🔇");
+        void updateSpeakerButton(boolean unmuted, boolean lockedOwner, boolean highlight) {
+            if (lockedOwner && unmuted) {
+                speakerBtn.setText("🔒🔊");
+            } else {
+                speakerBtn.setText(unmuted ? "🔊" : "🔇");
+            }
             speakerBtn.setBackground(TwitchUi.roundedRect(
-                    pinnedSimultaneous ? 0xCC9147FF : 0x9926262C,
+                    highlight ? 0xCC9147FF : 0x9926262C,
                     TwitchUi.dp(speakerBtn.getContext(), 4f), 0, 0));
         }
 
