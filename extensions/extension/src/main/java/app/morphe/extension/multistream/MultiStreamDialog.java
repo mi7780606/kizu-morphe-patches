@@ -309,6 +309,7 @@ final class MultiStreamDialog {
         dismissed = true;
         main.removeCallbacks(hideHudRunnable);
         for (StreamSlot slot : slots) {
+            slot.releaseProxySession();
             slot.player.release();
             slot.danmakuView.clear();
         }
@@ -530,6 +531,7 @@ final class MultiStreamDialog {
         if (idx < 0) return;
         boolean wasLocked = slot.login.equals(lockedAudioLogin);
         ircClient.removeChannel(slot.login);
+        slot.releaseProxySession();
         slot.danmakuView.clear();
         slot.player.release();
         videoArea.removeView(slot.container);
@@ -1006,6 +1008,7 @@ final class MultiStreamDialog {
         final FrameLayout container;
         final FrameLayout videoBox;
         final TextureView textureView;
+        final MultiStreamAdCoverView adCoverView;
         final DanmakuView danmakuView;
         final ProgressBar loadingBar;
         final TextView errorLabel;
@@ -1013,7 +1016,10 @@ final class MultiStreamDialog {
         final TextView titleBadge;
         final TextView speakerBtn;
         final MultiStreamPlayer player;
+        final Runnable clearAdCoverRunnable = this::clearAdCoverNow;
 
+        String proxySessionId;
+        boolean adSwappedToBackup;
         boolean pinnedUnmuted;
         boolean explicitlyMuted;
         long lastTapAtMs;
@@ -1030,6 +1036,8 @@ final class MultiStreamDialog {
             videoBox.setBackgroundColor(Color.BLACK);
             textureView = new TextureView(c);
             videoBox.addView(textureView, new FrameLayout.LayoutParams(-1, -1));
+            adCoverView = new MultiStreamAdCoverView(c);
+            videoBox.addView(adCoverView, new FrameLayout.LayoutParams(-1, -1));
             danmakuView = new DanmakuView(c);
             danmakuView.setClickable(false);
             danmakuView.setFocusable(false);
@@ -1151,22 +1159,77 @@ final class MultiStreamDialog {
         void loadStream(int targetAutoHeight) {
             Activity act = activityRef.get();
             if (act == null || dismissed) return;
+            releaseProxySession();
             loadingBar.setVisibility(View.VISIBLE);
             errorLabel.setVisibility(View.GONE);
             Context appCtx = act.getApplicationContext();
             KizuRuntime.ioExecutor().execute(() -> {
                 MultiStreamApi.StreamLoadResult res = MultiStreamApi.fetchStreamUri(appCtx, login);
                 main.post(() -> {
-                    if (dismissed || !slots.contains(this)) return;
+                    if (dismissed || !slots.contains(this)) {
+                        MultiStreamHlsProxy.getInstance().unregisterSession(res.proxySessionId);
+                        return;
+                    }
                     if (res.playUri == null) {
+                        MultiStreamHlsProxy.getInstance().unregisterSession(res.proxySessionId);
                         loadingBar.setVisibility(View.GONE);
                         errorLabel.setText((res.error != null ? res.error : "読み込み失敗") + "\nタップで再読込");
                         errorLabel.setVisibility(View.VISIBLE);
                         return;
                     }
+                    proxySessionId = res.proxySessionId;
+                    if (proxySessionId != null) {
+                        MultiStreamHlsProxy.getInstance().setAdStateListener(proxySessionId, this::onAdStateChanged);
+                    }
                     player.load(res.playUri, res.directUsherUri, targetAutoHeight);
                 });
             });
+        }
+
+        void releaseProxySession() {
+            main.removeCallbacks(clearAdCoverRunnable);
+            if (proxySessionId != null) {
+                MultiStreamHlsProxy.getInstance().unregisterSession(proxySessionId);
+                proxySessionId = null;
+            }
+            adSwappedToBackup = false;
+            adCoverView.hideAdCover();
+            if (player != null) {
+                player.setAdMuted(false);
+            }
+        }
+
+        private void onAdStateChanged(MultiStreamHlsProxy.AdState state, float remainingSeconds) {
+            if (dismissed || !slots.contains(this)) return;
+            if (state == MultiStreamHlsProxy.AdState.AD_BLOCKED_COVER) {
+                main.removeCallbacks(clearAdCoverRunnable);
+                adSwappedToBackup = false;
+                player.setAdMuted(true);
+                adCoverView.showAdCover(remainingSeconds);
+                updateBadge();
+            } else if (state == MultiStreamHlsProxy.AdState.SWAPPED_TO_BACKUP) {
+                main.removeCallbacks(clearAdCoverRunnable);
+                adSwappedToBackup = true;
+                player.setAdMuted(false);
+                adCoverView.hideAdCover();
+                updateBadge();
+            } else {
+                adSwappedToBackup = false;
+                updateBadge();
+                if (adCoverView.getVisibility() == View.VISIBLE) {
+                    main.removeCallbacks(clearAdCoverRunnable);
+                    main.postDelayed(clearAdCoverRunnable, 1200L);
+                } else {
+                    player.setAdMuted(false);
+                }
+            }
+        }
+
+        private void clearAdCoverNow() {
+            adCoverView.hideAdCover();
+            if (player != null) {
+                player.setAdMuted(false);
+            }
         }
 
         void fitVideoAspect16x9(int cellW, int cellH) {
@@ -1198,7 +1261,8 @@ final class MultiStreamDialog {
         }
 
         void updateBadge() {
-            titleBadge.setText("● " + displayName + " · " + player.getCurrentQualityLabel());
+            String suffix = adSwappedToBackup ? " · 🛡" : "";
+            titleBadge.setText("● " + displayName + " · " + player.getCurrentQualityLabel() + suffix);
         }
 
         void updateSpeakerButton(boolean unmuted, boolean lockedOwner, boolean highlight) {

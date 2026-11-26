@@ -30,15 +30,16 @@ final class MultiStreamApi {
     private static final String GQL_URL = "https://gql.twitch.tv/gql";
     private static final String VALIDATE_URL = "https://id.twitch.tv/oauth2/validate";
     private static final String CLIENT_ID = "kd1unb4b3q4t58fwlpcbzcbnm76a8fp";
+    private static final String WEB_CLIENT_ID = "kimne78kx3ncx6brgo4mv6wki5h1ko";
     private static final int CONNECT_TIMEOUT_MS = 6000;
     private static final int READ_TIMEOUT_MS = 8000;
     private static final int MAX_RESPONSE_BYTES = 512 * 1024;
     private static final Random RANDOM = new Random();
 
     private static final String PLAYBACK_TOKEN_QUERY =
-            "query PlaybackAccessToken($login: String!, $playerType: String!) {"
+            "query PlaybackAccessToken($login: String!, $platform: String!, $playerType: String!) {"
             + " streamPlaybackAccessToken(channelName: $login, params: {"
-            + " platform: \"android\", playerBackend: \"mediaplayer\", playerType: $playerType"
+            + " platform: $platform, playerBackend: \"mediaplayer\", playerType: $playerType"
             + " }) { value signature }"
             + " }";
 
@@ -87,68 +88,117 @@ final class MultiStreamApi {
     static final class StreamLoadResult {
         final Uri playUri;
         final Uri directUsherUri;
+        final String proxySessionId;
         final String error;
 
-        StreamLoadResult(Uri playUri, Uri directUsherUri, String error) {
+        StreamLoadResult(Uri playUri, Uri directUsherUri, String proxySessionId, String error) {
             this.playUri = playUri;
             this.directUsherUri = directUsherUri;
+            this.proxySessionId = proxySessionId;
             this.error = error;
         }
     }
 
     static StreamLoadResult fetchStreamUri(Context context, String rawLogin) {
-        if (rawLogin == null) return new StreamLoadResult(null, null, "チャンネル名が空です");
+        if (rawLogin == null) return new StreamLoadResult(null, null, null, "チャンネル名が空です");
         String login = rawLogin.trim().toLowerCase(Locale.ROOT);
-        if (login.isEmpty()) return new StreamLoadResult(null, null, "チャンネル名が空です");
+        if (login.isEmpty()) return new StreamLoadResult(null, null, null, "チャンネル名が空です");
 
         try {
             String authToken = KizuRuntime.readAuthToken(context);
             String playerType = Settings.ADS_EMBED_PLAYER_TYPE.get() ? "embed" : "mobile_player";
-
-            JSONObject tokenObj = requestPlaybackToken(login, playerType, authToken);
-            if (tokenObj == null && !authToken.isEmpty()) {
-                tokenObj = requestPlaybackToken(login, playerType, "");
+            Uri usherUri = fetchUsherUri(login, "android", playerType, authToken, CLIENT_ID);
+            if (usherUri == null && !authToken.isEmpty()) {
+                usherUri = fetchUsherUri(login, "android", playerType, "", CLIENT_ID);
             }
-            if (tokenObj == null) {
-                return new StreamLoadResult(null, null, "配信トークンを取得できませんでした");
-            }
-
-            String value = tokenObj.optString("value", "");
-            String sig = tokenObj.optString("signature", "");
-            if (value.isEmpty() || sig.isEmpty()) {
-                return new StreamLoadResult(null, null, "オフラインまたは再生不可の配信です");
+            if (usherUri == null) {
+                return new StreamLoadResult(null, null, null, "配信トークンを取得できませんでした");
             }
 
-            int p = 1000000 + RANDOM.nextInt(8999999);
-            Uri usherUri = Uri.parse("https://usher.ttvnw.net/api/channel/hls/" + Uri.encode(login) + ".m3u8")
-                    .buildUpon()
-                    .appendQueryParameter("token", value)
-                    .appendQueryParameter("sig", sig)
-                    .appendQueryParameter("allow_source", "true")
-                    .appendQueryParameter("allow_audio_only", "true")
-                    .appendQueryParameter("fast_bread", "true")
-                    .appendQueryParameter("player_backend", "mediaplayer")
-                    .appendQueryParameter("p", String.valueOf(p))
-                    .build();
+            if (!Settings.BLOCK_ADS.get()) {
+                return new StreamLoadResult(usherUri, usherUri, null, null);
+            }
 
-            Uri resolved = StreamProxy.resolveForMultiView(usherUri);
-            return new StreamLoadResult(resolved != null ? resolved : usherUri, usherUri, null);
+            // Never interfere with subscribed / Turbo / ad-free streams.
+            if (StreamProxy.isAdFreeStream(usherUri, login)) {
+                return new StreamLoadResult(usherUri, usherUri, null, null);
+            }
+
+            // Respect user-configured external proxy when set.
+            if (StreamProxy.hasExternalProxyConfigured()) {
+                Uri resolved = StreamProxy.resolveForMultiView(usherUri);
+                return new StreamLoadResult(resolved != null ? resolved : usherUri, usherUri, null, null);
+            }
+
+            // Hybrid local 127.0.0.1 HLS ad-swap proxy for non-subscribed streams without external proxy.
+            MultiStreamHlsProxy.SessionHandle handle = MultiStreamHlsProxy.getInstance()
+                    .registerSession(context, login, playerType, usherUri);
+            if (handle != null && handle.localMasterUri != null) {
+                return new StreamLoadResult(handle.localMasterUri, usherUri, handle.sessionId, null);
+            }
+            return new StreamLoadResult(usherUri, usherUri, null, null);
         } catch (Throwable t) {
             Log.e(TAG, "fetchStreamUri failed for " + login, t);
-            return new StreamLoadResult(null, null, "ストリーム取得エラー");
+            return new StreamLoadResult(null, null, null, "ストリーム取得エラー");
         }
     }
 
-    private static JSONObject requestPlaybackToken(String login, String playerType, String authToken) {
+    /**
+     * Fetches a fresh primary usher URI for session recovery (e.g. weaver playlist token expiry).
+     */
+    static Uri fetchPrimaryUsherUri(Context context, String login, String playerType) {
+        String authToken = context == null ? "" : KizuRuntime.readAuthToken(context);
+        Uri uri = fetchUsherUri(login, "android", playerType, authToken, CLIENT_ID);
+        if (uri == null && !authToken.isEmpty()) {
+            uri = fetchUsherUri(login, "android", playerType, "", CLIENT_ID);
+        }
+        return uri;
+    }
+
+    /**
+     * Fetches a backup master usher URI using an alternate playerType (embed / popout / frontpage / etc.).
+     * Tries web client ID anonymously first (cleanest VAFT backup session), falling back to Android client ID.
+     */
+    static Uri fetchBackupUsherUri(String login, String playerType) {
+        if (login == null || login.isEmpty() || playerType == null || playerType.isEmpty()) return null;
+        Uri uri = fetchUsherUri(login, "web", playerType, "", WEB_CLIENT_ID);
+        if (uri != null) return uri;
+        return fetchUsherUri(login, "android", playerType, "", CLIENT_ID);
+    }
+
+    private static Uri fetchUsherUri(String login, String platform, String playerType,
+                                     String authToken, String clientId) {
+        JSONObject tokenObj = requestPlaybackToken(login, platform, playerType, authToken, clientId);
+        if (tokenObj == null) return null;
+        String value = tokenObj.optString("value", "");
+        String sig = tokenObj.optString("signature", "");
+        if (value.isEmpty() || sig.isEmpty()) return null;
+
+        int p = 1000000 + RANDOM.nextInt(8999999);
+        return Uri.parse("https://usher.ttvnw.net/api/channel/hls/" + Uri.encode(login) + ".m3u8")
+                .buildUpon()
+                .appendQueryParameter("token", value)
+                .appendQueryParameter("sig", sig)
+                .appendQueryParameter("allow_source", "true")
+                .appendQueryParameter("allow_audio_only", "true")
+                .appendQueryParameter("fast_bread", "true")
+                .appendQueryParameter("player_backend", "mediaplayer")
+                .appendQueryParameter("p", String.valueOf(p))
+                .build();
+    }
+
+    private static JSONObject requestPlaybackToken(String login, String platform, String playerType,
+                                                   String authToken, String clientId) {
         try {
             JSONObject vars = new JSONObject()
                     .put("login", login)
+                    .put("platform", platform)
                     .put("playerType", playerType);
             JSONObject req = new JSONObject()
                     .put("operationName", "PlaybackAccessToken")
                     .put("variables", vars)
                     .put("query", PLAYBACK_TOKEN_QUERY);
-            JSONObject res = postGql(authToken, req.toString());
+            JSONObject res = postGql(authToken, clientId, req.toString());
             if (res == null) return null;
             JSONObject data = res.optJSONObject("data");
             return data == null ? null : data.optJSONObject("streamPlaybackAccessToken");
@@ -167,7 +217,7 @@ final class MultiStreamApi {
                     .put("operationName", "KizuFollowedLive")
                     .put("variables", new JSONObject().put("limit", 40))
                     .put("query", FOLLOWED_LIVE_QUERY);
-            JSONObject res = postGql(authToken, req.toString());
+            JSONObject res = postGql(authToken, CLIENT_ID, req.toString());
             if (res == null) return out;
             JSONObject data = res.optJSONObject("data");
             JSONObject currentUser = data == null ? null : data.optJSONObject("currentUser");
@@ -237,7 +287,7 @@ final class MultiStreamApi {
         }
     }
 
-    private static JSONObject postGql(String authToken, String body) {
+    private static JSONObject postGql(String authToken, String clientId, String body) {
         HttpURLConnection con = null;
         try {
             con = (HttpURLConnection) new URL(GQL_URL).openConnection();
@@ -247,7 +297,7 @@ final class MultiStreamApi {
             con.setDoOutput(true);
             con.setRequestProperty("Accept", "application/json");
             con.setRequestProperty("Content-Type", "application/json");
-            con.setRequestProperty("Client-ID", CLIENT_ID);
+            con.setRequestProperty("Client-ID", clientId != null && !clientId.isEmpty() ? clientId : CLIENT_ID);
             if (authToken != null && !authToken.isEmpty()) {
                 con.setRequestProperty("Authorization", "OAuth " + authToken);
             }

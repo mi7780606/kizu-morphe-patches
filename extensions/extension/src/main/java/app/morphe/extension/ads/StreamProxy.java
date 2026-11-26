@@ -102,6 +102,34 @@ public final class StreamProxy {
     }
 
     /**
+     * Returns true when an external stream proxy URL is configured (non-empty and not "off").
+     */
+    public static boolean hasExternalProxyConfigured() {
+        try {
+            String proxy = Settings.ADS_PROXY_URL.get().trim();
+            return !proxy.isEmpty() && !"off".equalsIgnoreCase(proxy);
+        } catch (Throwable ignored) {
+            return false;
+        }
+    }
+
+    /**
+     * Returns true when the given usher URI or channel already has ad-free entitlement
+     * (channel subscription, Twitch Turbo, privileged role, or disabled server ads).
+     */
+    public static boolean isAdFreeStream(Uri usherUri, String rawChannel) {
+        try {
+            String normalized = rawChannel == null ? "" : rawChannel.trim().toLowerCase(Locale.ROOT);
+            if (hasAdFreeToken(usherUri, normalized)) {
+                return true;
+            }
+            return !normalized.isEmpty() && isChannelSubscribed(normalized);
+        } catch (Throwable ignored) {
+            return false;
+        }
+    }
+
+    /**
      * Pre-warms the GQL channel subscription cache when switching to a channel so stream setup
      * sees the cached entitlement without waiting on the network.
      */

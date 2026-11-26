@@ -45,6 +45,7 @@ final class MultiStreamPipOverlay {
 
     private final FrameLayout card;
     private final TextureView textureView;
+    private final MultiStreamAdCoverView adCoverView;
     private final DanmakuView danmakuView;
     private final ProgressBar loadingBar;
     private final TextView errorLabel;
@@ -58,9 +59,12 @@ final class MultiStreamPipOverlay {
     private final MultiStreamIrcClient ircClient;
     private final View.OnLayoutChangeListener decorLayoutListener;
     private final Runnable hideHudRunnable = this::hideHud;
+    private final Runnable clearAdCoverRunnable = this::clearAdCoverNow;
 
     private String channelLogin;
     private String displayName;
+    private String proxySessionId;
+    private boolean adSwappedToBackup;
     private int sizeIndex = 1; // Medium (56%) default
     private float currentWidthRatio = WIDTH_RATIOS[1];
     private boolean danmakuEnabled = true;
@@ -89,6 +93,9 @@ final class MultiStreamPipOverlay {
 
         textureView = new TextureView(activity);
         card.addView(textureView, new FrameLayout.LayoutParams(-1, -1));
+
+        adCoverView = new MultiStreamAdCoverView(activity);
+        card.addView(adCoverView, new FrameLayout.LayoutParams(-1, -1));
 
         // Proportional DanmakuView: lineHeight = getHeight() / style.rows (exact normal PiP ratio).
         danmakuView = new DanmakuView(activity);
@@ -277,6 +284,7 @@ final class MultiStreamPipOverlay {
         if (dismissed) return;
         dismissed = true;
         main.removeCallbacks(hideHudRunnable);
+        releaseProxySession();
         try { decor.removeOnLayoutChangeListener(decorLayoutListener); } catch (Throwable ignored) {}
         player.release();
         ircClient.disconnect();
@@ -288,6 +296,7 @@ final class MultiStreamPipOverlay {
         if (dismissed) return;
         Activity act = activityRef.get();
         if (act == null) return;
+        releaseProxySession();
         loadingBar.setVisibility(View.VISIBLE);
         errorLabel.setVisibility(View.GONE);
         String targetLogin = channelLogin;
@@ -295,16 +304,70 @@ final class MultiStreamPipOverlay {
         KizuRuntime.ioExecutor().execute(() -> {
             MultiStreamApi.StreamLoadResult res = MultiStreamApi.fetchStreamUri(appCtx, targetLogin);
             main.post(() -> {
-                if (dismissed || !targetLogin.equals(channelLogin)) return;
+                if (dismissed || !targetLogin.equals(channelLogin)) {
+                    MultiStreamHlsProxy.getInstance().unregisterSession(res.proxySessionId);
+                    return;
+                }
                 if (res.playUri == null) {
+                    MultiStreamHlsProxy.getInstance().unregisterSession(res.proxySessionId);
                     loadingBar.setVisibility(View.GONE);
                     errorLabel.setText((res.error != null ? res.error : "読み込み失敗") + "\nタップで再読込");
                     errorLabel.setVisibility(View.VISIBLE);
                     return;
                 }
+                proxySessionId = res.proxySessionId;
+                if (proxySessionId != null) {
+                    MultiStreamHlsProxy.getInstance().setAdStateListener(proxySessionId, this::onAdStateChanged);
+                }
                 player.load(res.playUri, res.directUsherUri, 480);
             });
         });
+    }
+
+    private void releaseProxySession() {
+        main.removeCallbacks(clearAdCoverRunnable);
+        if (proxySessionId != null) {
+            MultiStreamHlsProxy.getInstance().unregisterSession(proxySessionId);
+            proxySessionId = null;
+        }
+        adSwappedToBackup = false;
+        adCoverView.hideAdCover();
+        if (player != null) {
+            player.setAdMuted(false);
+        }
+    }
+
+    private void onAdStateChanged(MultiStreamHlsProxy.AdState state, float remainingSeconds) {
+        if (dismissed) return;
+        if (state == MultiStreamHlsProxy.AdState.AD_BLOCKED_COVER) {
+            main.removeCallbacks(clearAdCoverRunnable);
+            adSwappedToBackup = false;
+            player.setAdMuted(true);
+            adCoverView.showAdCover(remainingSeconds);
+            updateTitleBadge();
+        } else if (state == MultiStreamHlsProxy.AdState.SWAPPED_TO_BACKUP) {
+            main.removeCallbacks(clearAdCoverRunnable);
+            adSwappedToBackup = true;
+            player.setAdMuted(false);
+            adCoverView.hideAdCover();
+            updateTitleBadge();
+        } else {
+            adSwappedToBackup = false;
+            updateTitleBadge();
+            if (adCoverView.getVisibility() == View.VISIBLE) {
+                main.removeCallbacks(clearAdCoverRunnable);
+                main.postDelayed(clearAdCoverRunnable, 1200L);
+            } else {
+                player.setAdMuted(false);
+            }
+        }
+    }
+
+    private void clearAdCoverNow() {
+        adCoverView.hideAdCover();
+        if (player != null) {
+            player.setAdMuted(false);
+        }
     }
 
     private void toggleMute() {
@@ -334,7 +397,8 @@ final class MultiStreamPipOverlay {
     }
 
     private void updateTitleBadge() {
-        titleBadge.setText("● " + displayName + " · " + player.getCurrentQualityLabel());
+        String suffix = adSwappedToBackup ? " · 🛡" : "";
+        titleBadge.setText("● " + displayName + " · " + player.getCurrentQualityLabel() + suffix);
     }
 
     private void updateButtons() {

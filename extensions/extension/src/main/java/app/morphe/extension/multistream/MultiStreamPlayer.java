@@ -83,6 +83,7 @@ final class MultiStreamPlayer implements TextureView.SurfaceTextureListener {
     private boolean manualQualityChosen;
     private boolean autoCapApplied;
     private boolean muted = true;
+    private boolean adMuted;
     private float unmutedVolume = 1f;
     private boolean pausedByLifecycle;
     private boolean released;
@@ -114,6 +115,7 @@ final class MultiStreamPlayer implements TextureView.SurfaceTextureListener {
         this.manualQualityChosen = false;
         this.autoCapApplied = false;
         this.hasStartedPlaying = false;
+        this.adMuted = false;
         this.cachedQualities = Collections.emptyList();
         this.lastQualityLabel = "Auto";
         notifyState(true, null);
@@ -136,6 +138,13 @@ final class MultiStreamPlayer implements TextureView.SurfaceTextureListener {
 
     void setMuted(boolean muted) {
         this.muted = muted;
+        applyVolume();
+    }
+
+    /** Temporarily mutes audio during a blocked ad break without altering user mute preference. */
+    void setAdMuted(boolean adMuted) {
+        if (this.adMuted == adMuted) return;
+        this.adMuted = adMuted;
         applyVolume();
     }
 
@@ -488,7 +497,7 @@ final class MultiStreamPlayer implements TextureView.SurfaceTextureListener {
     }
 
     private void applyVolume() {
-        float vol = muted ? 0f : unmutedVolume;
+        float vol = (muted || adMuted) ? 0f : unmutedVolume;
         try {
             if (ivsPlayer != null && ivsSetVolume != null) {
                 ivsSetVolume.invoke(ivsPlayer, vol);
