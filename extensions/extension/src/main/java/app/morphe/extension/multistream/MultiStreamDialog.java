@@ -85,7 +85,9 @@ final class MultiStreamDialog {
     private int focusedIndex = -1;
     private String lockedAudioLogin;
     private boolean allMutedInLockMode;
-    private boolean emphasisLayout = true;
+    private int layoutMode;
+    private int lastLayoutSlotCount = -1;
+    private boolean lastLayoutLandscape;
     private boolean danmakuEnabled = true;
     private boolean hudVisible = true;
     private boolean dismissed;
@@ -142,7 +144,7 @@ final class MultiStreamDialog {
         topBar.addView(toPipBtn);
 
         layoutBtn = topActionChip(activity, "⊞", v -> {
-            emphasisLayout = !emphasisLayout;
+            layoutMode = (layoutMode + 1) % layoutVariantCount();
             relayoutSlots();
             updateTopBarState();
             scheduleHudHide();
@@ -697,6 +699,13 @@ final class MultiStreamDialog {
         } else if (landscape) {
             topBar.setVisibility(hudVisible ? View.VISIBLE : View.GONE);
         }
+        int count = slots.size();
+        if (lastLayoutSlotCount != count || lastLayoutLandscape != landscape) {
+            lastLayoutSlotCount = count;
+            lastLayoutLandscape = landscape;
+            layoutMode = 0;
+            updateTopBarState();
+        }
     }
 
     private void updateTopBarState() {
@@ -708,9 +717,40 @@ final class MultiStreamDialog {
         addBtn.setEnabled(canAdd);
         addBtn.setAlpha(canAdd ? 1f : 0.45f);
         toPipBtn.setVisibility(slots.isEmpty() ? View.GONE : View.VISIBLE);
-        layoutBtn.setVisibility(slots.size() >= 2 ? View.VISIBLE : View.GONE);
-        layoutBtn.setText(emphasisLayout ? "⊞" : "▤");
+        int variants = layoutVariantCount();
+        layoutBtn.setVisibility(variants > 1 ? View.VISIBLE : View.GONE);
+        layoutBtn.setText(currentLayoutLabel());
         danmakuToggleBtn.setTextColor(danmakuEnabled ? 0xFFBF94FF : 0xAAFFFFFF);
+    }
+
+    private int layoutVariantCount() {
+        int count = slots.size();
+        if (count <= 1) return 1;
+        boolean landscape = isLandscape();
+        if (!landscape) {
+            if (count == 2) return 1;
+            if (count == 3) return 2; // 3 full-width rows (default) <-> 1 large + 2 side-by-side
+            return 3; // 4 slots: 1+1+2 (default) <-> 4 stacked rows <-> 2x2 grid
+        }
+        return 2; // Landscape 2/3/4 each have 2 optimal layouts
+    }
+
+    private String currentLayoutLabel() {
+        int count = slots.size();
+        int mode = layoutMode % Math.max(1, layoutVariantCount());
+        if (!isLandscape()) {
+            if (count == 3) return mode == 0 ? "⊞ 3段" : "⊞ 1+2";
+            if (count == 4) {
+                if (mode == 0) return "⊞ 1+1+2";
+                if (mode == 1) return "⊞ 4段";
+                return "⊞ 2×2";
+            }
+            return "⊞";
+        }
+        if (count == 2) return mode == 0 ? "⊞ 強調" : "⊞ 均等";
+        if (count == 3) return mode == 0 ? "⊞ 1+2" : "⊞ 2+1";
+        if (count == 4) return mode == 0 ? "⊞ 2×2" : "⊞ 1+3";
+        return "⊞";
     }
 
     private void showHud() {
@@ -757,10 +797,17 @@ final class MultiStreamDialog {
     }
 
     /**
-     * Portrait mode: packs all stream slots tightly from top = 0 with exact 16:9 heights and a
+     * Portrait mode: packs all stream slots tightly from top = 0 with maximum 16:9 area and a
      * subtle 1dp hairline divider between them — zero vertical blank gaps between players.
+     *
+     * - 1 slot: full width 16:9
+     * - 2 slots: 2 full-width 16:9 stacked rows
+     * - 3 slots: mode 0 = 3 large full-width stacked rows (default), mode 1 = 1 large + 2 side-by-side
+     * - 4 slots: mode 0 = 2 large full-width + 2 side-by-side (1+1+2), mode 1 = 4 equal stacked rows,
+     *            mode 2 = 2x2 grid
      */
     private void layoutPortraitTopPacked(int count, int w, int h, int div) {
+        int mode = layoutMode % Math.max(1, layoutVariantCount());
         if (count == 1) {
             int h0 = Math.min(h, Math.round(w * 9f / 16f));
             placeSlot(0, 0, 0, w, h0);
@@ -774,7 +821,14 @@ final class MultiStreamDialog {
             return;
         }
         if (count == 3) {
-            if (emphasisLayout) {
+            if (mode == 0) {
+                // Default: 3 large full-width stacked streams tightly packed from top.
+                int natural = Math.round(w * 9f / 16f);
+                int eachH = (natural * 3 + div * 2 <= h) ? natural : Math.max(1, (h - div * 2) / 3);
+                placeSlot(0, 0, 0, w, eachH);
+                placeSlot(1, 0, eachH + div, w, eachH);
+                placeSlot(2, 0, (eachH + div) * 2, w, eachH);
+            } else {
                 int halfW = Math.max(1, (w - div) / 2);
                 int h0 = Math.round(w * 9f / 16f);
                 int h1 = Math.round(halfW * 9f / 16f);
@@ -786,30 +840,35 @@ final class MultiStreamDialog {
                 placeSlot(0, 0, 0, w, h0);
                 placeSlot(1, 0, h0 + div, halfW, h1);
                 placeSlot(2, halfW + div, h0 + div, w - div - halfW, h1);
-            } else {
-                int natural = Math.round(w * 9f / 16f);
-                int eachH = (natural * 3 + div * 2 <= h) ? natural : Math.max(1, (h - div * 2) / 3);
-                placeSlot(0, 0, 0, w, eachH);
-                placeSlot(1, 0, eachH + div, w, eachH);
-                placeSlot(2, 0, (eachH + div) * 2, w, eachH);
             }
             return;
         }
         // 4 slots
-        if (emphasisLayout) {
-            int colW = Math.max(1, (w - div * 2) / 3);
-            int h0 = Math.round(w * 9f / 16f);
-            int h1 = Math.round(colW * 9f / 16f);
-            if (h0 + div + h1 > h) {
-                float scale = (h - div) / (float) Math.max(1, h0 + h1);
-                h0 = Math.max(1, Math.round(h0 * scale));
-                h1 = Math.max(1, h - div - h0);
+        if (mode == 0) {
+            // Default: 2 large full-width rows + 2 side-by-side below (maximizes area with zero letterboxing).
+            int halfW = Math.max(1, (w - div) / 2);
+            int bigH = Math.round(w * 9f / 16f);
+            int smallH = Math.round(halfW * 9f / 16f);
+            int totalH = bigH * 2 + smallH + div * 2;
+            if (totalH > h) {
+                float scale = (h - div * 2) / (float) Math.max(1, bigH * 2 + smallH);
+                bigH = Math.max(1, Math.round(bigH * scale));
+                smallH = Math.max(1, h - div * 2 - bigH * 2);
             }
-            placeSlot(0, 0, 0, w, h0);
-            placeSlot(1, 0, h0 + div, colW, h1);
-            placeSlot(2, colW + div, h0 + div, colW, h1);
-            placeSlot(3, (colW + div) * 2, h0 + div, w - (colW + div) * 2, h1);
+            placeSlot(0, 0, 0, w, bigH);
+            placeSlot(1, 0, bigH + div, w, bigH);
+            int row2Top = (bigH + div) * 2;
+            placeSlot(2, 0, row2Top, halfW, smallH);
+            placeSlot(3, halfW + div, row2Top, w - div - halfW, smallH);
+        } else if (mode == 1) {
+            // 4 stacked rows filling full vertical space.
+            int natural = Math.round(w * 9f / 16f);
+            int eachH = (natural * 4 + div * 3 <= h) ? natural : Math.max(1, (h - div * 3) / 4);
+            for (int i = 0; i < 4; i++) {
+                placeSlot(i, 0, i * (eachH + div), w, eachH);
+            }
         } else {
+            // 2x2 compact grid packed tightly from top.
             int halfW = Math.max(1, (w - div) / 2);
             int natural = Math.round(halfW * 9f / 16f);
             int rowH = (natural * 2 + div <= h) ? natural : Math.max(1, (h - div) / 2);
@@ -820,44 +879,103 @@ final class MultiStreamDialog {
         }
     }
 
+    /**
+     * Landscape mode: solves exact 16:9 proportions for each stream count so videos pack tightly
+     * with minimal wasted area and zero internal black gaps between adjacent streams.
+     */
     private void layoutLandscape(int count, int w, int h, int div) {
+        int mode = layoutMode % Math.max(1, layoutVariantCount());
         if (count == 1) {
-            placeSlot(0, 0, 0, w, h);
-        } else if (count == 2) {
-            int leftW = emphasisLayout ? Math.round((w - div) * 0.66f) : (w - div) / 2;
-            int rightW = w - div - leftW;
-            placeSlot(0, 0, 0, leftW, h);
-            placeSlot(1, leftW + div, 0, rightW, h);
-        } else if (count == 3) {
-            if (emphasisLayout) {
-                int leftW = Math.round((w - div) * 0.64f);
-                int rightW = w - div - leftW;
-                int halfH = (h - div) / 2;
-                placeSlot(0, 0, 0, leftW, h);
-                placeSlot(1, leftW + div, 0, rightW, halfH);
-                placeSlot(2, leftW + div, halfH + div, rightW, h - div - halfH);
+            int fitW = Math.min(w, Math.round(h * 16f / 9f));
+            int fitH = Math.min(h, Math.round(fitW * 9f / 16f));
+            placeSlot(0, (w - fitW) / 2, (h - fitH) / 2, fitW, fitH);
+            return;
+        }
+        if (count == 2) {
+            int leftW;
+            int rightW;
+            if (mode == 0) {
+                // Main emphasis: cap main at exact 16:9 width for height h, give rest to sub.
+                int maxMainW = Math.round(h * 16f / 9f);
+                leftW = Math.min(maxMainW, Math.round((w - div) * 0.67f));
+                rightW = Math.min(maxMainW, w - div - leftW);
             } else {
-                int colW = (w - div * 2) / 3;
-                placeSlot(0, 0, 0, colW, h);
-                placeSlot(1, colW + div, 0, colW, h);
-                placeSlot(2, (colW + div) * 2, 0, w - (colW + div) * 2, h);
+                int halfW = Math.min(Math.round(h * 16f / 9f), (w - div) / 2);
+                leftW = halfW;
+                rightW = halfW;
             }
-        } else {
-            if (emphasisLayout) {
-                int leftW = Math.round((w - div) * 0.64f);
-                int rightW = w - div - leftW;
-                int subH = (h - div * 2) / 3;
-                placeSlot(0, 0, 0, leftW, h);
-                placeSlot(1, leftW + div, 0, rightW, subH);
-                placeSlot(2, leftW + div, subH + div, rightW, subH);
-                placeSlot(3, leftW + div, (subH + div) * 2, rightW, h - (subH + div) * 2);
+            int leftH = Math.min(h, Math.round(leftW * 9f / 16f));
+            int rightH = Math.min(h, Math.round(rightW * 9f / 16f));
+            int totalW = leftW + div + rightW;
+            int startX = Math.max(0, (w - totalW) / 2);
+            placeSlot(0, startX, (h - leftH) / 2, leftW, leftH);
+            placeSlot(1, startX + leftW + div, (h - rightH) / 2, rightW, rightH);
+            return;
+        }
+        if (count == 3) {
+            if (mode == 0) {
+                // Optimal 1+2: right 2 stacked take exact 16:9 width for H/2 each; left main fills the rest.
+                int subHMax = Math.max(1, (h - div) / 2);
+                int exactRightW = Math.round(subHMax * 16f / 9f);
+                int rightW = Math.max(Math.round((w - div) * 0.30f),
+                        Math.min(Math.round((w - div) * 0.44f), exactRightW));
+                int leftW = Math.min(Math.round(h * 16f / 9f), Math.max(1, w - div - rightW));
+                int leftH = Math.min(h, Math.round(leftW * 9f / 16f));
+                int subH = Math.min(subHMax, Math.round(rightW * 9f / 16f));
+                int rightBlockH = subH * 2 + div;
+
+                int totalW = leftW + div + rightW;
+                int startX = Math.max(0, (w - totalW) / 2);
+                int rightTop = Math.max(0, (h - rightBlockH) / 2);
+                placeSlot(0, startX, Math.max(0, (h - leftH) / 2), leftW, leftH);
+                placeSlot(1, startX + leftW + div, rightTop, rightW, subH);
+                placeSlot(2, startX + leftW + div, rightTop + subH + div, rightW, subH);
             } else {
-                int halfW = (w - div) / 2;
-                int halfH = (h - div) / 2;
-                placeSlot(0, 0, 0, halfW, halfH);
-                placeSlot(1, halfW + div, 0, w - div - halfW, halfH);
-                placeSlot(2, 0, halfH + div, halfW, h - div - halfH);
-                placeSlot(3, halfW + div, halfH + div, w - div - halfW, h - div - halfH);
+                // Alternate 2+1: 2 equal streams on top row, 1 centered below (far larger than 3 narrow columns).
+                int rowHMax = Math.max(1, (h - div) / 2);
+                int slotW = Math.min((w - div) / 2, Math.round(rowHMax * 16f / 9f));
+                int slotH = Math.min(rowHMax, Math.round(slotW * 9f / 16f));
+                int topRowW = slotW * 2 + div;
+                int blockH = slotH * 2 + div;
+                int startX = Math.max(0, (w - topRowW) / 2);
+                int startY = Math.max(0, (h - blockH) / 2);
+                placeSlot(0, startX, startY, slotW, slotH);
+                placeSlot(1, startX + slotW + div, startY, slotW, slotH);
+                placeSlot(2, Math.max(0, (w - slotW) / 2), startY + slotH + div, slotW, slotH);
+            }
+            return;
+        }
+        // 4 slots Landscape
+        if (mode == 0) {
+            // Default: tightly packed 2x2 16:9 grid (maximum balanced area ~85-100%).
+            int rowHMax = Math.max(1, (h - div) / 2);
+            int colW = Math.min((w - div) / 2, Math.round(rowHMax * 16f / 9f));
+            int rowH = Math.min(rowHMax, Math.round(colW * 9f / 16f));
+            int blockW = colW * 2 + div;
+            int blockH = rowH * 2 + div;
+            int startX = Math.max(0, (w - blockW) / 2);
+            int startY = Math.max(0, (h - blockH) / 2);
+            placeSlot(0, startX, startY, colW, rowH);
+            placeSlot(1, startX + colW + div, startY, colW, rowH);
+            placeSlot(2, startX, startY + rowH + div, colW, rowH);
+            placeSlot(3, startX + colW + div, startY + rowH + div, colW, rowH);
+        } else {
+            // Alternate 1+3: right 3 stacked take exact 16:9 width for H/3 each; left main fills the rest.
+            int subHMax = Math.max(1, (h - div * 2) / 3);
+            int exactRightW = Math.round(subHMax * 16f / 9f);
+            int rightW = Math.max(Math.round((w - div) * 0.25f),
+                    Math.min(Math.round((w - div) * 0.40f), exactRightW));
+            int leftW = Math.min(Math.round(h * 16f / 9f), Math.max(1, w - div - rightW));
+            int leftH = Math.min(h, Math.round(leftW * 9f / 16f));
+            int subH = Math.min(subHMax, Math.round(rightW * 9f / 16f));
+            int rightBlockH = subH * 3 + div * 2;
+
+            int totalW = leftW + div + rightW;
+            int startX = Math.max(0, (w - totalW) / 2);
+            int rightTop = Math.max(0, (h - rightBlockH) / 2);
+            placeSlot(0, startX, Math.max(0, (h - leftH) / 2), leftW, leftH);
+            for (int i = 0; i < 3; i++) {
+                placeSlot(i + 1, startX + leftW + div, rightTop + i * (subH + div), rightW, subH);
             }
         }
     }
