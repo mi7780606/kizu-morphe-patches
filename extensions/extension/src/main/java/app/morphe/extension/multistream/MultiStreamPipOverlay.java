@@ -134,11 +134,7 @@ final class MultiStreamPipOverlay {
         titleBadge.setEllipsize(TextUtils.TruncateAt.END);
         topRow.addView(titleBadge, new LinearLayout.LayoutParams(0, -2, 1f));
 
-        muteBtn = miniChip(activity, "🔇", v -> {
-            player.setMuted(!player.isMuted());
-            updateButtons();
-            scheduleHudHide();
-        });
+        muteBtn = miniChip(activity, "🔇", v -> toggleMute());
         topRow.addView(muteBtn);
 
         danmakuBtn = miniChip(activity, "弾", v -> {
@@ -314,6 +310,13 @@ final class MultiStreamPipOverlay {
                 player.load(res.playUri, res.directUsherUri, 480);
             });
         });
+    }
+
+    private void toggleMute() {
+        if (dismissed || player == null) return;
+        player.setMuted(!player.isMuted());
+        updateButtons();
+        scheduleHudHide();
     }
 
     private void showQualityPicker() {
