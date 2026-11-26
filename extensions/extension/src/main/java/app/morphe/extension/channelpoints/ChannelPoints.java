@@ -15,6 +15,7 @@ import java.util.concurrent.TimeUnit;
 
 import app.morphe.extension.KizuRuntime;
 import app.morphe.extension.Utils;
+import app.morphe.extension.ads.StreamProxy;
 import app.morphe.extension.settings.Settings;
 
 /**
@@ -114,6 +115,9 @@ public final class ChannelPoints {
         if (changed) {
             lastSuccessfulClaimKey = null;
             log("active channel id=" + newId + " login=" + newLogin);
+        }
+        if (newLogin != null) {
+            try { StreamProxy.prefetchSubscription(newLogin); } catch (Throwable ignored) {}
         }
     }
 
