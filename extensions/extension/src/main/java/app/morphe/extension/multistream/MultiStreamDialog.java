@@ -16,8 +16,6 @@ import android.util.TypedValue;
 import android.view.Gravity;
 import android.view.TextureView;
 import android.view.View;
-import android.view.ViewGroup;
-import android.view.ViewParent;
 import android.view.Window;
 import android.view.WindowInsets;
 import android.view.WindowManager;
@@ -48,8 +46,8 @@ import io.github.bakwudo.uyu.extension.settings.KizuSettings;
  *
  * - Non-fullscreen window respecting system status/navigation bars & display cutouts.
  * - Portrait: non-overlapping top header, streams tightly top-packed with 1dp hairline dividers
- *   and zero blank gaps between videos, proportional Danmaku on focused stream, compact comment input only.
- * - Landscape: full video grid with auto-hiding top header, proportional Danmaku, no chat input.
+ *   and zero blank gaps between videos, proportional Danmaku on every stream, compact comment input only.
+ * - Landscape: full video grid with auto-hiding top header, proportional Danmaku on every stream, no chat input.
  * - Audio: configurable right inside Mode B between "Tap-to-Switch" and "Lock Audio Channel",
  *   plus per-slot simultaneous unmute buttons.
  */
@@ -78,7 +76,6 @@ final class MultiStreamDialog {
     private final TextView toPipBtn;
     private final TextView emptyHint;
 
-    private final DanmakuView danmakuView;
     private final MultiStreamIrcClient ircClient;
     private final Runnable hideHudRunnable = this::hideHud;
 
@@ -213,13 +210,14 @@ final class MultiStreamDialog {
         mainColumn.addView(commentBar, new LinearLayout.LayoutParams(-1, -2));
         rootFrame.addView(mainColumn, new FrameLayout.LayoutParams(-1, -1));
 
-        danmakuView = new DanmakuView(activity);
-        danmakuView.setClickable(false);
-        danmakuView.setFocusable(false);
-
-        ircClient = new MultiStreamIrcClient(activity, comment -> {
-            if (!dismissed && danmakuEnabled) {
-                danmakuView.addComment(comment);
+        ircClient = new MultiStreamIrcClient(activity, (channel, comment) -> {
+            if (dismissed || !danmakuEnabled || channel == null) return;
+            for (int i = 0, n = slots.size(); i < n; i++) {
+                StreamSlot slot = slots.get(i);
+                if (slot.login.equals(channel)) {
+                    slot.danmakuView.addComment(comment);
+                    break;
+                }
             }
         });
 
@@ -286,14 +284,18 @@ final class MultiStreamDialog {
 
     void pause() {
         if (dismissed) return;
-        for (StreamSlot slot : slots) slot.player.pause();
-        danmakuView.setPaused(true);
+        for (StreamSlot slot : slots) {
+            slot.player.pause();
+            slot.danmakuView.setPaused(true);
+        }
     }
 
     void resume() {
         if (dismissed) return;
-        for (StreamSlot slot : slots) slot.player.resume();
-        danmakuView.setPaused(!danmakuEnabled);
+        for (StreamSlot slot : slots) {
+            slot.player.resume();
+            slot.danmakuView.setPaused(!danmakuEnabled);
+        }
     }
 
     void dismiss() {
@@ -308,10 +310,10 @@ final class MultiStreamDialog {
         main.removeCallbacks(hideHudRunnable);
         for (StreamSlot slot : slots) {
             slot.player.release();
+            slot.danmakuView.clear();
         }
         slots.clear();
         ircClient.disconnect();
-        danmakuView.clear();
         MultiStreamManager.onMultiViewClosed(this);
     }
 
@@ -364,7 +366,7 @@ final class MultiStreamDialog {
 
         root.addView(buildModeRow(act,
                 "音声チャンネルを固定",
-                "別枠をタップして弾幕やコメント送信先を変えても、固定した配信の音声を維持します。",
+                "別枠をタップしてコメント送信先を変えても、固定した配信の音声を維持します。",
                 lockMode,
                 () -> {
                     KizuSettings.MULTI_STREAM_AUDIO_LOCK.save(true);
@@ -505,6 +507,7 @@ final class MultiStreamDialog {
         if (act == null) return;
         String display = rawDisplay != null && !rawDisplay.isEmpty() ? rawDisplay : login;
         StreamSlot slot = new StreamSlot(act, login, display);
+        slot.applyDanmakuState(danmakuEnabled);
         slots.add(slot);
         videoArea.addView(slot.container, new FrameLayout.LayoutParams(0, 0, Gravity.TOP | Gravity.LEFT));
         emptyHint.setVisibility(View.GONE);
@@ -512,6 +515,7 @@ final class MultiStreamDialog {
         if (lockedAudioLogin == null) lockedAudioLogin = login;
         updateSlotTargetQualities();
         slot.loadStream(targetAutoHeightForSlot(slots.size() - 1));
+        ircClient.addChannel(login);
         if (focusedIndex < 0 || (autoFocusIfFirst && slots.size() == 1)) {
             setFocus(slots.size() - 1);
         } else {
@@ -525,9 +529,8 @@ final class MultiStreamDialog {
         int idx = slots.indexOf(slot);
         if (idx < 0) return;
         boolean wasLocked = slot.login.equals(lockedAudioLogin);
-        if (danmakuView.getParent() == slot.videoBox) {
-            slot.videoBox.removeView(danmakuView);
-        }
+        ircClient.removeChannel(slot.login);
+        slot.danmakuView.clear();
         slot.player.release();
         videoArea.removeView(slot.container);
         slots.remove(idx);
@@ -535,7 +538,6 @@ final class MultiStreamDialog {
         if (slots.isEmpty()) {
             focusedIndex = -1;
             lockedAudioLogin = null;
-            danmakuView.clear();
             emptyHint.setVisibility(View.VISIBLE);
             commentInput.setHint("コメントを送信...");
         } else {
@@ -569,7 +571,6 @@ final class MultiStreamDialog {
 
     private void setFocus(int index) {
         if (index < 0 || index >= slots.size()) return;
-        boolean channelChanged = focusedIndex != index;
         focusedIndex = index;
         StreamSlot focused = slots.get(index);
         if (!KizuSettings.MULTI_STREAM_AUDIO_LOCK.get()) {
@@ -580,23 +581,7 @@ final class MultiStreamDialog {
             slots.get(i).setFocusedVisual(i == focusedIndex);
         }
         applyAudioFocus();
-        attachDanmakuToSlot(focused);
         commentInput.setHint("#" + focused.displayName + " へコメント...");
-
-        if (channelChanged) {
-            danmakuView.clear();
-            ircClient.joinChannel(focused.login);
-        }
-    }
-
-    private void attachDanmakuToSlot(StreamSlot slot) {
-        ViewParent p = danmakuView.getParent();
-        if (p == slot.videoBox) return;
-        if (p instanceof ViewGroup oldParent) {
-            oldParent.removeView(danmakuView);
-        }
-        slot.videoBox.addView(danmakuView, new FrameLayout.LayoutParams(-1, -1));
-        applyDanmakuState();
     }
 
     private void applyAudioFocus() {
@@ -624,9 +609,9 @@ final class MultiStreamDialog {
     }
 
     private void applyDanmakuState() {
-        danmakuView.setVisibility(danmakuEnabled ? View.VISIBLE : View.INVISIBLE);
-        danmakuView.setPaused(!danmakuEnabled);
-        if (!danmakuEnabled) danmakuView.clear();
+        for (StreamSlot slot : slots) {
+            slot.applyDanmakuState(danmakuEnabled);
+        }
     }
 
     private void updateSlotTargetQualities() {
@@ -659,8 +644,10 @@ final class MultiStreamDialog {
     private void sendComment() {
         String text = commentInput.getText() == null ? "" : commentInput.getText().toString().trim();
         if (text.isEmpty()) return;
+        if (focusedIndex < 0 || focusedIndex >= slots.size()) return;
+        String targetLogin = slots.get(focusedIndex).login;
         sendBtn.setEnabled(false);
-        ircClient.sendMessage(text, (ok, error) -> {
+        ircClient.sendMessage(targetLogin, text, (ok, error) -> {
             sendBtn.setEnabled(true);
             Activity act = activityRef.get();
             if (ok) {
@@ -1019,6 +1006,7 @@ final class MultiStreamDialog {
         final FrameLayout container;
         final FrameLayout videoBox;
         final TextureView textureView;
+        final DanmakuView danmakuView;
         final ProgressBar loadingBar;
         final TextView errorLabel;
         final LinearLayout slotHud;
@@ -1042,6 +1030,10 @@ final class MultiStreamDialog {
             videoBox.setBackgroundColor(Color.BLACK);
             textureView = new TextureView(c);
             videoBox.addView(textureView, new FrameLayout.LayoutParams(-1, -1));
+            danmakuView = new DanmakuView(c);
+            danmakuView.setClickable(false);
+            danmakuView.setFocusable(false);
+            videoBox.addView(danmakuView, new FrameLayout.LayoutParams(-1, -1));
             container.addView(videoBox, new FrameLayout.LayoutParams(-1, -1, Gravity.CENTER));
 
             loadingBar = new ProgressBar(c);
@@ -1218,6 +1210,12 @@ final class MultiStreamDialog {
             speakerBtn.setBackground(TwitchUi.roundedRect(
                     highlight ? 0xCC9147FF : 0x9926262C,
                     TwitchUi.dp(speakerBtn.getContext(), 4f), 0, 0));
+        }
+
+        void applyDanmakuState(boolean enabled) {
+            danmakuView.setVisibility(enabled ? View.VISIBLE : View.INVISIBLE);
+            danmakuView.setPaused(!enabled);
+            if (!enabled) danmakuView.clear();
         }
 
         void setHudVisible(boolean visible) {

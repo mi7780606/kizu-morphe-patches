@@ -12,9 +12,11 @@ import java.io.OutputStreamWriter;
 import java.net.Socket;
 import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Locale;
 import java.util.Random;
+import java.util.Set;
 
 import javax.net.ssl.SSLSocketFactory;
 
@@ -36,7 +38,7 @@ final class MultiStreamIrcClient {
     private static final Random RANDOM = new Random();
 
     interface Listener {
-        void onDanmakuComment(DanmakuComment comment);
+        void onDanmakuComment(String channel, DanmakuComment comment);
     }
 
     interface SendCallback {
@@ -47,10 +49,12 @@ final class MultiStreamIrcClient {
     private final Listener listener;
     private final Handler main = new Handler(Looper.getMainLooper());
     private final Object writeLock = new Object();
+    private final Object channelsLock = new Object();
+    private final Set<String> joinedChannels = new LinkedHashSet<>();
 
     private volatile boolean closed;
     private volatile boolean authenticated;
-    private volatile String activeChannel = "";
+    private boolean sessionReady;
     private volatile Socket socket;
     private volatile BufferedWriter writer;
     private Thread readerThread;
@@ -60,33 +64,77 @@ final class MultiStreamIrcClient {
         this.listener = listener;
     }
 
+    /** Replaces all joined channels with a single channel (used by Mode A Sub-PiP). */
     void joinChannel(String rawLogin) {
         if (closed || rawLogin == null) return;
         String next = rawLogin.trim().toLowerCase(Locale.ROOT);
         if (next.isEmpty()) return;
 
-        String prev = activeChannel;
-        activeChannel = next;
-
-        if (writer != null && socket != null && !socket.isClosed()) {
-            if (!next.equals(prev)) {
+        boolean alreadyJoined;
+        List<String> toPart = new ArrayList<>();
+        boolean ready;
+        synchronized (channelsLock) {
+            alreadyJoined = joinedChannels.contains(next);
+            for (String existing : joinedChannels) {
+                if (!existing.equals(next)) toPart.add(existing);
+            }
+            joinedChannels.clear();
+            joinedChannels.add(next);
+            ready = sessionReady;
+        }
+        if (ready) {
+            if (!toPart.isEmpty() || !alreadyJoined) {
                 KizuRuntime.ioExecutor().execute(() -> {
-                    if (!prev.isEmpty()) sendRaw("PART #" + prev);
-                    sendRaw("JOIN #" + next);
+                    for (String old : toPart) sendRaw("PART #" + old);
+                    if (!alreadyJoined) sendRaw("JOIN #" + next);
                 });
             }
-            return;
+        } else {
+            startConnectionThread();
         }
-        startConnectionThread();
     }
 
-    void sendMessage(String rawText, SendCallback callback) {
+    /** Joins an additional channel concurrently on the same IRC connection (used by Mode B). */
+    void addChannel(String rawLogin) {
+        if (closed || rawLogin == null) return;
+        String next = rawLogin.trim().toLowerCase(Locale.ROOT);
+        if (next.isEmpty()) return;
+
+        boolean shouldJoinNow;
+        synchronized (channelsLock) {
+            if (!joinedChannels.add(next)) return;
+            shouldJoinNow = sessionReady;
+        }
+        if (shouldJoinNow) {
+            KizuRuntime.ioExecutor().execute(() -> sendRaw("JOIN #" + next));
+        } else {
+            startConnectionThread();
+        }
+    }
+
+    /** Parts a single channel while keeping all other joined channels active. */
+    void removeChannel(String rawLogin) {
+        if (closed || rawLogin == null) return;
+        String target = rawLogin.trim().toLowerCase(Locale.ROOT);
+        if (target.isEmpty()) return;
+
+        boolean shouldPartNow;
+        synchronized (channelsLock) {
+            if (!joinedChannels.remove(target)) return;
+            shouldPartNow = sessionReady;
+        }
+        if (shouldPartNow) {
+            KizuRuntime.ioExecutor().execute(() -> sendRaw("PART #" + target));
+        }
+    }
+
+    void sendMessage(String rawChannel, String rawText, SendCallback callback) {
         if (closed) {
             postSendResult(callback, false, "接続が閉じられています");
             return;
         }
-        String channel = activeChannel;
-        if (channel == null || channel.isEmpty()) {
+        String channel = rawChannel == null ? "" : rawChannel.trim().toLowerCase(Locale.ROOT);
+        if (channel.isEmpty()) {
             postSendResult(callback, false, "送信先チャンネルが未選択です");
             return;
         }
@@ -107,7 +155,7 @@ final class MultiStreamIrcClient {
                 DanmakuComment echo = buildDanmakuComment(cleaned, null);
                 if (echo != null && listener != null) {
                     main.post(() -> {
-                        if (!closed) listener.onDanmakuComment(echo);
+                        if (!closed) listener.onDanmakuComment(channel, echo);
                     });
                 }
             } else {
@@ -168,8 +216,12 @@ final class MultiStreamIrcClient {
                     sendRaw("NICK justinfan" + (10000 + RANDOM.nextInt(89999)));
                 }
 
-                String chan = activeChannel;
-                if (chan != null && !chan.isEmpty()) {
+                List<String> snapshot;
+                synchronized (channelsLock) {
+                    sessionReady = true;
+                    snapshot = new ArrayList<>(joinedChannels);
+                }
+                for (String chan : snapshot) {
                     sendRaw("JOIN #" + chan);
                 }
                 backoffMs = 1500;
@@ -183,6 +235,9 @@ final class MultiStreamIrcClient {
                     Log.i(TAG, "IRC disconnected: " + t.getClass().getSimpleName());
                 }
             } finally {
+                synchronized (channelsLock) {
+                    sessionReady = false;
+                }
                 writer = null;
                 if (s != null) {
                     try { s.close(); } catch (Throwable ignored) {}
@@ -197,6 +252,12 @@ final class MultiStreamIrcClient {
                 break;
             }
             backoffMs = Math.min(12_000, backoffMs * 2);
+        }
+    }
+
+    private boolean isJoined(String channel) {
+        synchronized (channelsLock) {
+            return joinedChannels.contains(channel);
         }
     }
 
@@ -220,7 +281,7 @@ final class MultiStreamIrcClient {
         if (msgSep <= chanStart) return;
 
         String channel = rest.substring(chanStart, msgSep).trim().toLowerCase(Locale.ROOT);
-        if (!channel.equals(activeChannel)) return;
+        if (!isJoined(channel)) return;
 
         String message = rest.substring(msgSep + 2);
         if (message.startsWith("\u0001ACTION ") && message.endsWith("\u0001") && message.length() > 9) {
@@ -230,7 +291,7 @@ final class MultiStreamIrcClient {
         DanmakuComment comment = buildDanmakuComment(message, emotesTag);
         if (comment != null && listener != null) {
             main.post(() -> {
-                if (!closed) listener.onDanmakuComment(comment);
+                if (!closed) listener.onDanmakuComment(channel, comment);
             });
         }
     }

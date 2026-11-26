@@ -209,8 +209,8 @@ final class MultiStreamPipOverlay {
         player.setMuted(true);
         player.attachTextureView(textureView);
 
-        ircClient = new MultiStreamIrcClient(activity, comment -> {
-            if (!dismissed && danmakuEnabled) {
+        ircClient = new MultiStreamIrcClient(activity, (channel, comment) -> {
+            if (!dismissed && danmakuEnabled && channel != null && channel.equalsIgnoreCase(channelLogin)) {
                 danmakuView.addComment(comment);
             }
         });
