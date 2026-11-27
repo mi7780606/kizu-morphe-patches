@@ -154,9 +154,10 @@ public final class BlockAdsPatch {
                 case PlayerEvents.PICTURE_BY_PICTURE_AD:
                     Utils.logInfo("Blocked a picture by picture ad");
                     return true;
+                case PlayerEvents.STITCHED_AD_QUARTILE:
+                    mainHandler.post(() -> AdBlockOverlay.onAdQuartile(renderView, player));
+                    return true;
                 default:
-                    // Quartiles of a stitched ad, which Twitch reports for the ad it no longer
-                    // knows about.
                     return true;
             }
         } catch (Exception ex) {

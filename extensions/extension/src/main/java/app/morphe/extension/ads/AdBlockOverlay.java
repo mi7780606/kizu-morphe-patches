@@ -56,6 +56,7 @@ final class AdBlockOverlay {
 
     private final WeakReference<Object> player;
     private final Runnable tick = this::tick;
+    private WeakReference<View> lastRenderView = new WeakReference<>(null);
     private long startTime;
     private long endTime;
     private long lastDisplayedSeconds = -2L;
@@ -75,22 +76,50 @@ final class AdBlockOverlay {
     static void show(View renderView, Object player, float adSeconds, float adBreakSeconds) {
         long now = SystemClock.uptimeMillis();
         AdBlockOverlay adBreak = breaks.get(player);
+        float fallbackSec = adBreakSeconds > 0 ? adBreakSeconds : (adSeconds > 0 ? adSeconds : 30f);
         if (adBreak == null) {
             adBreak = new AdBlockOverlay(player);
             breaks.put(player, adBreak);
             anyActive = true;
-            float seconds = adBreakSeconds > 0 ? adBreakSeconds : adSeconds;
             adBreak.startTime = now;
-            adBreak.endTime = now + (long) (seconds * 1000);
+            adBreak.endTime = now + (long) (fallbackSec * 1000);
             PlayerEvents.setMuted(player, true);
         } else {
-            adBreak.endTime = Math.max(adBreak.endTime, now + (long) (adSeconds * 1000));
+            float extendSec = adSeconds > 0 ? adSeconds : (adBreakSeconds > 0 ? adBreakSeconds : 15f);
+            adBreak.endTime = Math.max(adBreak.endTime, now + (long) (extendSec * 1000));
+        }
+        if (renderView != null) {
+            adBreak.lastRenderView = new WeakReference<>(renderView);
         }
         adBreak.lastDisplayedSeconds = -2L;
         adBreak.cover(renderView);
         adBreak.tick();
         Utils.logInfo(String.format(Locale.ROOT, "Ad blocked: %.1f s ad, %.1f s break",
                 adSeconds, adBreakSeconds));
+    }
+
+    /**
+     * Called on {@link PlayerEvents#STITCHED_AD_QUARTILE} to recover if a stream-start preroll
+     * fired {@code STITCHED_AD_STARTED} before the player view attached, and to keep the overlay
+     * alive across long multi-ad pods.
+     */
+    static void onAdQuartile(View renderView, Object player) {
+        long now = SystemClock.uptimeMillis();
+        AdBlockOverlay adBreak = breaks.get(player);
+        if (adBreak == null) {
+            show(renderView, player, 20f, 20f);
+            return;
+        }
+        if (renderView != null) {
+            adBreak.lastRenderView = new WeakReference<>(renderView);
+        }
+        adBreak.endTime = Math.max(adBreak.endTime, now + 12_000L);
+        PlayerEvents.setMuted(player, true);
+        if (adBreak.view == null || adBreak.view.getParent() == null) {
+            adBreak.cover(renderView);
+        } else if (adBreak.view.getParent() instanceof ViewGroup group) {
+            adBreak.maybeStartBypassOverlay(group);
+        }
     }
 
     static void end(Object player) {
@@ -196,6 +225,12 @@ final class AdBlockOverlay {
             finish();
             return;
         }
+        // Retry mounting cover + bypass overlay if preroll fired before player_view_delegate attached.
+        boolean needsMount = view == null || view.getParent() == null;
+        if (needsMount) {
+            cover(lastRenderView.get());
+            needsMount = view == null || view.getParent() == null;
+        }
         long seconds = left > 0 ? (left + 999L) / 1000L : 0L;
         if (seconds != lastDisplayedSeconds) {
             lastDisplayedSeconds = seconds;
@@ -215,9 +250,11 @@ final class AdBlockOverlay {
                 }
             }
         }
-        long nextDelay = seconds > 0
+        long nextDelay = needsMount
+                ? 200L
+                : (seconds > 0
                 ? Math.max(100L, Math.min(1000L, left - (seconds - 1L) * 1000L + 16L))
-                : Math.max(150L, Math.min(1000L, left + END_GRACE_MILLIS));
+                : Math.max(150L, Math.min(1000L, left + END_GRACE_MILLIS)));
         mainHandler.postDelayed(tick, nextDelay);
     }
 
@@ -240,13 +277,31 @@ final class AdBlockOverlay {
     }
 
     private static ViewGroup findPlayerView(View renderView) {
-        if (renderView == null || !renderView.isAttachedToWindow()) return null;
-        int playerId = Utils.getResourceId(renderView.getContext(), "player_view_delegate", "id");
-        for (ViewParent parent = renderView.getParent(); parent instanceof View view; parent = parent.getParent()) {
-            if (playerId != 0 && view.getId() == playerId && view instanceof FrameLayout layout) return layout;
+        if (renderView != null) {
+            int playerId = Utils.getResourceId(renderView.getContext(), "player_view_delegate", "id");
+            for (ViewParent parent = renderView.getParent(); parent instanceof View v; parent = parent.getParent()) {
+                if (playerId != 0 && v.getId() == playerId && v instanceof FrameLayout layout) return layout;
+            }
+            if (renderView.isAttachedToWindow()) {
+                ViewParent parent = renderView.getParent();
+                if (parent instanceof FrameLayout layout) return layout;
+            }
         }
-        ViewParent parent = renderView.getParent();
-        return parent instanceof FrameLayout layout ? layout : null;
+        // Fallback for stream-start prerolls when STITCHED_AD_STARTED fires before renderView attaches.
+        android.app.Activity activity = Utils.getCurrentActivity();
+        if (activity != null && activity.getWindow() != null) {
+            View decor = activity.getWindow().getDecorView();
+            if (decor != null) {
+                int playerId = Utils.getResourceId(activity, "player_view_delegate", "id");
+                if (playerId != 0) {
+                    View found = decor.findViewById(playerId);
+                    if (found instanceof FrameLayout layout && layout.isAttachedToWindow()) {
+                        return layout;
+                    }
+                }
+            }
+        }
+        return null;
     }
 
     private static int dp(float d, int value) {

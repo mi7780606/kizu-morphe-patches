@@ -67,8 +67,10 @@ final class MultiStreamHlsProxy {
             "embed",
             "popout",
             "frontpage",
+            "channel_home_carousel",
+            "thunderdome",
             "autoplay",
-            "site"
+            "picture-by-picture"
     };
 
     private static final Pattern RESOLUTION_PATTERN = Pattern.compile("RESOLUTION=\\d+x(\\d+)");
@@ -165,7 +167,14 @@ final class MultiStreamHlsProxy {
             if (mediaRes.body == null || detectStitchedAd(mediaRes.body).hasAd) continue;
 
             Log.i(TAG, "Ad-bypass overlay found clean backup for " + login + " via playerType=" + candidate);
-            return registerSession(context, login, candidate, backupMasterUri);
+            SessionHandle handle = registerSession(context, login, candidate, backupMasterUri);
+            if (handle != null) {
+                ProxySession s = sessions.get(handle.sessionId);
+                if (s != null) {
+                    s.preloadedMasterBody = masterRes.body;
+                }
+            }
+            return handle;
         }
         return null;
     }
@@ -322,19 +331,25 @@ final class MultiStreamHlsProxy {
     }
 
     private String serveMaster(ProxySession session) {
-        HttpResult res = httpGetText(session.primaryMasterUrl);
-        if (res.code == 403 || res.code == 404 || res.code == 410) {
-            Uri refreshed = MultiStreamApi.fetchPrimaryUsherUri(
-                    session.appContext, session.login, session.primaryPlayerType);
-            if (refreshed != null) {
-                session.primaryMasterUrl = refreshed.toString();
-                res = httpGetText(session.primaryMasterUrl);
+        String masterBody = session.preloadedMasterBody;
+        if (masterBody != null) {
+            session.preloadedMasterBody = null;
+        } else {
+            HttpResult res = httpGetText(session.primaryMasterUrl);
+            if (res.code == 403 || res.code == 404 || res.code == 410) {
+                Uri refreshed = MultiStreamApi.fetchPrimaryUsherUri(
+                        session.appContext, session.login, session.primaryPlayerType);
+                if (refreshed != null) {
+                    session.primaryMasterUrl = refreshed.toString();
+                    res = httpGetText(session.primaryMasterUrl);
+                }
             }
+            masterBody = res.body;
         }
-        if (res.body == null) return null;
+        if (masterBody == null) return null;
 
         List<VariantEntry> parsed = new ArrayList<>();
-        String rewritten = rewriteMasterPlaylist(session, res.body, session.primaryMasterUrl, parsed);
+        String rewritten = rewriteMasterPlaylist(session, masterBody, session.primaryMasterUrl, parsed);
         synchronized (session.lock) {
             session.variants = parsed;
         }
@@ -767,6 +782,7 @@ final class MultiStreamHlsProxy {
                 String lower = trimmed.toLowerCase(Locale.ROOT);
                 if (lower.contains("twitch-stitched-ad")
                         || lower.contains("twitch-maf-ad")
+                        || lower.contains("twitch-ad-quartile")
                         || lower.contains("stitched-ad")
                         || lower.contains("x-tv-twitch-ad")) {
                     foundAd = true;
@@ -1047,6 +1063,7 @@ final class MultiStreamHlsProxy {
         final ConcurrentHashMap<String, Long> candidateFailedAtMs = new ConcurrentHashMap<>();
 
         volatile String primaryMasterUrl;
+        volatile String preloadedMasterBody;
         volatile AdStateListener listener;
         volatile boolean closed;
         volatile long lastAccessMs = SystemClock.uptimeMillis();

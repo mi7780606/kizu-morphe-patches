@@ -61,6 +61,7 @@ public final class AdBypassOverlayPlayer {
 
         // Already running for the same player & channel (e.g. ad 2/3 in the same pod): keep seamlessly.
         if (active != null && active.matches(playerContainer, nativePlayer, login)) {
+            active.syncAdBlockView(adBlockView);
             return;
         }
         stopAll();
@@ -139,7 +140,7 @@ public final class AdBypassOverlayPlayer {
 
     private static final class ActiveOverlay {
         private final WeakReference<ViewGroup> containerRef;
-        private final WeakReference<View> adBlockViewRef;
+        private WeakReference<View> adBlockViewRef;
         private final WeakReference<Object> nativePlayerRef;
         private final WeakReference<Activity> activityRef;
         private final String channelLogin;
@@ -175,8 +176,10 @@ public final class AdBypassOverlayPlayer {
             rootView.setBackgroundColor(Color.BLACK);
             rootView.setClickable(false);
             rootView.setFocusable(false);
-            // Keep completely invisible until verified clean backup reaches PLAYING so AdBlockOverlay stays visible.
-            rootView.setVisibility(View.INVISIBLE);
+            // MUST remain View.VISIBLE so TextureView immediately allocates its SurfaceTexture.
+            // While loading, rootView sits directly underneath opaque AdBlockOverlay.view; once
+            // clean playback starts, AdBlockOverlay.view is hidden to reveal rootView smoothly.
+            rootView.setVisibility(View.VISIBLE);
 
             videoBox = new FrameLayout(c);
             videoBox.setBackgroundColor(Color.BLACK);
@@ -273,6 +276,13 @@ public final class AdBypassOverlayPlayer {
             return activity != null && activityRef.get() == activity;
         }
 
+        void syncAdBlockView(View adBlockView) {
+            if (adBlockView != null) {
+                adBlockViewRef = new WeakReference<>(adBlockView);
+                adBlockView.setVisibility(streamRevealed && !adCovered ? View.INVISIBLE : View.VISIBLE);
+            }
+        }
+
         void attachAndStart() {
             ViewGroup container = containerRef.get();
             if (container == null || released) return;
@@ -282,10 +292,12 @@ public final class AdBypassOverlayPlayer {
                 try { container.removeView(stale); } catch (Throwable ignored) {}
             }
 
+            // Insert directly UNDER AdBlockOverlay's dark cover (so TextureView is VISIBLE and
+            // creates its SurfaceTexture immediately while AdBlockOverlay hides the loading state).
             View adView = adBlockViewRef.get();
             int adIdx = adView != null ? container.indexOfChild(adView) : -1;
             int insertIdx = adIdx >= 0
-                    ? Math.min(adIdx + 1, container.getChildCount())
+                    ? adIdx
                     : Math.min(1, container.getChildCount());
 
             container.addView(rootView, insertIdx, new FrameLayout.LayoutParams(
@@ -335,9 +347,7 @@ public final class AdBypassOverlayPlayer {
                 player.setAdMuted(false);
                 player.setMuted(userMuted);
             }
-            if (rootView.getVisibility() != View.VISIBLE) {
-                rootView.setVisibility(View.VISIBLE);
-            }
+            setAdBlockCoverVisible(false);
             updateMuteChip();
         }
 
@@ -360,7 +370,7 @@ public final class AdBypassOverlayPlayer {
                     if (!pausedByLifecycle) {
                         player.setMuted(userMuted);
                     }
-                    rootView.setVisibility(View.VISIBLE);
+                    setAdBlockCoverVisible(false);
                 }
             }
         }
@@ -368,8 +378,16 @@ public final class AdBypassOverlayPlayer {
         private void hideVideoOverlay() {
             streamRevealed = false;
             player.setMuted(true);
-            if (rootView.getVisibility() != View.INVISIBLE) {
-                rootView.setVisibility(View.INVISIBLE);
+            setAdBlockCoverVisible(true);
+        }
+
+        private void setAdBlockCoverVisible(boolean visible) {
+            View adView = adBlockViewRef.get();
+            if (adView != null) {
+                int target = visible ? View.VISIBLE : View.INVISIBLE;
+                if (adView.getVisibility() != target) {
+                    adView.setVisibility(target);
+                }
             }
         }
 
@@ -450,6 +468,7 @@ public final class AdBypassOverlayPlayer {
             if (parent instanceof ViewGroup group) {
                 try { group.removeView(rootView); } catch (Throwable ignored) {}
             }
+            setAdBlockCoverVisible(true);
         }
     }
 }
