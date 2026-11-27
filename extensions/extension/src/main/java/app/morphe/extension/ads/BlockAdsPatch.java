@@ -125,6 +125,7 @@ public final class BlockAdsPatch {
         try {
             if (player != null) {
                 lastEventPlayer = new WeakReference<>(player);
+                try { NetworkQualityManager.onNativePlayerEvent(player); } catch (Throwable ignored) {}
                 if (nativePlaybackSuppressed) {
                     try { PlayerEvents.setMuted(player, true); } catch (Throwable ignored) {}
                     invokeNoArg(player, "pause");
@@ -229,6 +230,7 @@ public final class BlockAdsPatch {
     public static Uri overrideStreamUri(Uri uri) {
         try {
             recordStreamUri(uri, false);
+            try { NetworkQualityManager.onNewNativeStreamUri(); } catch (Throwable ignored) {}
             return uri != null && isEnabled() ? StreamProxy.override(uri) : uri;
         } catch (Exception ex) {
             Utils.logError("Block ads: failed to use the proxy", ex);
@@ -247,6 +249,16 @@ public final class BlockAdsPatch {
             try { NetworkQualityManager.onNativePlayerLoad(mediaPlayer); } catch (Throwable ignored) {}
         }
         StreamProxy.preload(mediaPlayer, uri, listener);
+    }
+
+    /** Synchronizes the active live channel login when Twitch's chat/theatre switches channels. */
+    public static void onActiveChannelChanged(String login) {
+        if (login == null) return;
+        String clean = login.trim().toLowerCase(Locale.ROOT);
+        if (!clean.isEmpty()) {
+            lastLiveChannelLogin = clean;
+            lastStreamIsLive = true;
+        }
     }
 
     /** Returns the currently playing live channel login, or {@code null} for VODs / unknown streams. */

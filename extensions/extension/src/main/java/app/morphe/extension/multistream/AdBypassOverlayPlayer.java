@@ -325,17 +325,30 @@ public final class AdBypassOverlayPlayer {
                         }
                         return;
                     }
-                    if (handle == null || handle.localMasterUri == null) {
+                    if (handle == null || handle.initialPlayUri == null) {
                         Log.i(TAG, "No clean backup stream currently available for " + channelLogin);
                         hideVideoOverlay();
                         scheduleOneRetry();
                         return;
                     }
                     proxySessionId = handle.sessionId;
-                    MultiStreamHlsProxy.getInstance().setAdStateListener(proxySessionId, this::onProxyAdState);
+                    MultiStreamHlsProxy.getInstance().setAdStateListener(proxySessionId,
+                            new MultiStreamHlsProxy.AdStateListener() {
+                                @Override
+                                public void onAdStateChanged(MultiStreamHlsProxy.AdState state, float remainingSeconds) {
+                                    onProxyAdState(state, remainingSeconds);
+                                }
+
+                                @Override
+                                public void onSwapStreamUri(android.net.Uri nextPlayUri) {
+                                    if (!released && nextPlayUri != null) {
+                                        player.load(nextPlayUri, null, 0);
+                                    }
+                                }
+                            });
                     adCovered = false;
-                    // Pass directFallbackUri=null so overlay NEVER falls back to an ad-stitched primary stream.
-                    player.load(handle.localMasterUri, null, 0);
+                    // Direct HTTPS usher backup URI: never blocked by Android cleartext policy.
+                    player.load(handle.initialPlayUri, null, 0);
                 });
             });
         }

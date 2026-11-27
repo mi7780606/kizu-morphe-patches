@@ -10,6 +10,7 @@ import java.lang.ref.WeakReference;
 import java.util.WeakHashMap;
 
 import app.morphe.extension.Utils;
+import app.morphe.extension.player.NetworkQualityManager;
 import app.morphe.extension.settings.Setting;
 import app.morphe.extension.settings.Settings;
 import app.morphe.extension.videostats.NativeVideoStatsViews;
@@ -30,6 +31,9 @@ public final class NativeReloadViews {
     private NativeReloadViews() {}
 
     public static synchronized void install(View root, Object owner, boolean live, int volumeId) {
+        if (live && owner != null) {
+            try { NetworkQualityManager.bindNativeReloadCandidate(owner); } catch (Throwable ignored) {}
+        }
         if (root == null || !live || !(owner instanceof NativeReloadOwner)) return;
         ensurePrefListener();
 

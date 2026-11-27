@@ -7,15 +7,9 @@ import android.os.Looper;
 import android.os.SystemClock;
 import android.util.Log;
 
-import java.io.BufferedReader;
 import java.io.ByteArrayOutputStream;
 import java.io.InputStream;
-import java.io.InputStreamReader;
-import java.io.OutputStream;
 import java.net.HttpURLConnection;
-import java.net.InetAddress;
-import java.net.ServerSocket;
-import java.net.Socket;
 import java.net.URI;
 import java.net.URL;
 import java.nio.charset.StandardCharsets;
@@ -28,39 +22,33 @@ import java.util.Map;
 import java.util.TimeZone;
 import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
-import java.util.concurrent.ExecutorService;
-import java.util.concurrent.SynchronousQueue;
-import java.util.concurrent.ThreadPoolExecutor;
+import java.util.concurrent.ScheduledFuture;
 import java.util.concurrent.TimeUnit;
-import java.util.concurrent.atomic.AtomicInteger;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
+import app.morphe.extension.KizuRuntime;
+
 /**
- * In-app local HTTP/1.1 HLS proxy bound strictly to {@code 127.0.0.1} for Mode A and Mode B
- * multi-stream playback.
+ * Direct-HTTPS HLS stitched-ad monitor and backup stream swapper for normal playback ad-bypass
+ * ({@link AdBypassOverlayPlayer}), Mode A Sub-PiP, and Mode B Multi-View.
  *
- * <p>Only tiny {@code .m3u8} playlists flow through this proxy; video/audio media segments remain
- * direct HTTPS Twitch CDN URLs so bandwidth and latency overhead are negligible.</p>
- *
- * <p>When a Twitch stitched-ad marker appears in the primary media playlist, the proxy fetches a
- * clean backup stream using alternate {@code playerType}s ({@code embed}, {@code popout},
- * {@code frontpage}, {@code autoplay}, {@code site}) and splices it seamlessly with RFC 8216
- * {@code #EXT-X-DISCONTINUITY} continuity, then returns to the original high-quality primary
- * stream once the ad ends. If backup streams also contain ads, it notifies the slot listener to
- * mute and display {@link MultiStreamAdCoverView}.</p>
+ * <p>Android 9+ blocks cleartext {@code http://127.0.0.1} traffic in Twitch's APK
+ * ({@code usesCleartextTraffic="false"}). Instead of routing playlists through a local HTTP socket,
+ * players load {@code https://usher.ttvnw.net/...} directly while this monitor polls a lightweight
+ * variant {@code .m3u8} (~4 KB) over HTTPS every 2.5 seconds. When a Twitch stitched-ad marker is
+ * detected, it probes clean backup {@code playerType} streams over HTTPS and hot-swaps the player
+ * to a verified ad-free {@code https://usher.ttvnw.net/...} URI (or activates the mute + dark cover
+ * fallback if all backup types also carry ads), then swaps back to primary once ads finish.</p>
  */
 final class MultiStreamHlsProxy {
-    private static final String TAG = "KizuMultiHlsProxy";
+    private static final String TAG = "KizuHlsAdMonitor";
 
     private static final int UPSTREAM_CONNECT_TIMEOUT_MS = 3500;
     private static final int UPSTREAM_READ_TIMEOUT_MS = 4500;
-    private static final int CLIENT_SO_TIMEOUT_MS = 5000;
     private static final int MAX_PLAYLIST_BYTES = 512 * 1024;
-    private static final long SESSION_IDLE_EXPIRE_MS = 20L * 60_000L;
-    private static final long BACKUP_CACHE_TTL_MS = 4L * 60_000L;
-    private static final long CANDIDATE_COOLDOWN_MS = 15_000L;
-    private static final int MAX_CANDIDATES_PER_POLL = 2;
+    private static final long POLL_INTERVAL_MS = 2500L;
+    private static final long CANDIDATE_COOLDOWN_MS = 12_000L;
     private static final int CLEAN_POLLS_BEFORE_RETURN = 2;
 
     private static final String[] BACKUP_PLAYER_TYPES = {
@@ -75,8 +63,6 @@ final class MultiStreamHlsProxy {
 
     private static final Pattern RESOLUTION_PATTERN = Pattern.compile("RESOLUTION=\\d+x(\\d+)");
     private static final Pattern BANDWIDTH_PATTERN = Pattern.compile("BANDWIDTH=(\\d+)");
-    private static final Pattern VIDEO_GROUP_PATTERN = Pattern.compile("VIDEO=\"([^\"]+)\"");
-    private static final Pattern URI_ATTR_PATTERN = Pattern.compile("URI=\"([^\"]+)\"");
     private static final Pattern DURATION_ATTR_PATTERN =
             Pattern.compile("(?:PLANNED-DURATION|DURATION)=([0-9]+(?:\\.[0-9]+)?)");
     private static final Pattern START_DATE_ATTR_PATTERN =
@@ -90,35 +76,23 @@ final class MultiStreamHlsProxy {
 
     interface AdStateListener {
         void onAdStateChanged(AdState state, float remainingSeconds);
+        default void onSwapStreamUri(Uri nextPlayUri) {}
     }
 
     static final class SessionHandle {
         final String sessionId;
-        final Uri localMasterUri;
+        final Uri initialPlayUri;
 
-        SessionHandle(String sessionId, Uri localMasterUri) {
+        SessionHandle(String sessionId, Uri initialPlayUri) {
             this.sessionId = sessionId;
-            this.localMasterUri = localMasterUri;
+            this.initialPlayUri = initialPlayUri;
         }
     }
 
     private static final MultiStreamHlsProxy INSTANCE = new MultiStreamHlsProxy();
 
     private final Handler main = new Handler(Looper.getMainLooper());
-    private final ConcurrentHashMap<String, ProxySession> sessions = new ConcurrentHashMap<>();
-    private final AtomicInteger workerCounter = new AtomicInteger(1);
-    private final ExecutorService workers = new ThreadPoolExecutor(
-            2, 16, 30L, TimeUnit.SECONDS,
-            new SynchronousQueue<>(),
-            r -> {
-                Thread t = new Thread(r, "kizu-hls-w" + workerCounter.getAndIncrement());
-                t.setDaemon(true);
-                return t;
-            },
-            new ThreadPoolExecutor.CallerRunsPolicy());
-
-    private ServerSocket serverSocket;
-    private volatile int port = -1;
+    private final ConcurrentHashMap<String, MonitorSession> sessions = new ConcurrentHashMap<>();
 
     private MultiStreamHlsProxy() {}
 
@@ -126,62 +100,53 @@ final class MultiStreamHlsProxy {
         return INSTANCE;
     }
 
+    /**
+     * Registers a Mode A / Mode B stream session starting on {@code primaryMasterUri} (direct HTTPS)
+     * and monitors its playlist in the background for stitched ads.
+     */
     SessionHandle registerSession(Context context, String login, String primaryPlayerType, Uri primaryMasterUri) {
         if (login == null || login.isEmpty() || primaryMasterUri == null) return null;
-        if (!ensureStarted()) return null;
-
-        pruneExpiredSessions();
         String sid = UUID.randomUUID().toString().replace("-", "").substring(0, 12);
         Context appCtx = context == null ? null : context.getApplicationContext();
-        ProxySession session = new ProxySession(sid, appCtx, login, primaryPlayerType, primaryMasterUri.toString());
+        MonitorSession session = new MonitorSession(
+                sid, appCtx, login, primaryPlayerType, primaryMasterUri, false);
         sessions.put(sid, session);
-
-        Uri localUri = Uri.parse("http://127.0.0.1:" + port + "/s/" + sid + "/master.m3u8");
-        return new SessionHandle(sid, localUri);
+        startPolling(session, 1200L);
+        return new SessionHandle(sid, primaryMasterUri);
     }
 
     /**
-     * Probes alternate {@code playerType} backup streams ({@code embed}, {@code popout},
-     * {@code frontpage}, {@code autoplay}, {@code site}) and registers a local HLS proxy session
-     * on the first verified ad-free backup stream. Used by {@link AdBypassOverlayPlayer} during
-     * normal playback stitched ads so the overlay opens directly on clean content.
-     *
-     * @return Session handle if a clean backup stream was found, or {@code null} if all backups
-     *         currently contain stitched ads or could not be fetched.
+     * Probes alternate {@code playerType} backup streams over HTTPS and registers a backup-only
+     * monitor session on the first verified ad-free {@code https://usher.ttvnw.net/...} stream.
+     * Used by {@link AdBypassOverlayPlayer} during normal playback stitched ads.
      */
     SessionHandle registerBackupFirstSession(Context context, String rawLogin) {
         if (rawLogin == null) return null;
         String login = rawLogin.trim().toLowerCase(Locale.ROOT);
         if (login.isEmpty()) return null;
-        if (!ensureStarted()) return null;
 
-        for (String candidate : BACKUP_PLAYER_TYPES) {
-            Uri backupMasterUri = MultiStreamApi.fetchBackupUsherUri(login, candidate);
-            if (backupMasterUri == null) continue;
-            HttpResult masterRes = httpGetText(backupMasterUri.toString());
-            if (masterRes.body == null) continue;
-            List<VariantEntry> variants = parseMasterVariants(masterRes.body, backupMasterUri.toString());
-            VariantEntry probeVariant = pickBestVariant(variants, 720, null);
-            if (probeVariant == null || probeVariant.upstreamUrl == null) continue;
-            HttpResult mediaRes = httpGetText(probeVariant.upstreamUrl);
-            if (mediaRes.body == null || detectStitchedAd(mediaRes.body).hasAd) continue;
+        CleanBackupCandidate found = findCleanBackup(login, null, null);
+        if (found == null) return null;
 
-            Log.i(TAG, "Ad-bypass overlay found clean backup for " + login + " via playerType=" + candidate);
-            SessionHandle handle = registerSession(context, login, candidate, backupMasterUri);
-            if (handle != null) {
-                ProxySession s = sessions.get(handle.sessionId);
-                if (s != null) {
-                    s.preloadedMasterBody = masterRes.body;
-                }
-            }
-            return handle;
-        }
-        return null;
+        String sid = UUID.randomUUID().toString().replace("-", "").substring(0, 12);
+        Context appCtx = context == null ? null : context.getApplicationContext();
+        MonitorSession session = new MonitorSession(
+                sid, appCtx, login, found.playerType, found.masterUri, true);
+        session.activeBackupType = found.playerType;
+        session.activeBackupMasterUri = found.masterUri;
+        session.activeBackupProbeUrl = found.probeVariantUrl;
+        session.servingBackup = true;
+        sessions.put(sid, session);
+        startPolling(session, POLL_INTERVAL_MS);
+
+        Log.i(TAG, "Ad-bypass overlay selected clean HTTPS backup for " + login
+                + " via playerType=" + found.playerType);
+        return new SessionHandle(sid, found.masterUri);
     }
 
     void setAdStateListener(String sessionId, AdStateListener listener) {
         if (sessionId == null) return;
-        ProxySession s = sessions.get(sessionId);
+        MonitorSession s = sessions.get(sessionId);
         if (s != null) {
             s.listener = listener;
         }
@@ -189,399 +154,181 @@ final class MultiStreamHlsProxy {
 
     void unregisterSession(String sessionId) {
         if (sessionId == null) return;
-        ProxySession removed = sessions.remove(sessionId);
+        MonitorSession removed = sessions.remove(sessionId);
         if (removed != null) {
             removed.closed = true;
             removed.listener = null;
+            ScheduledFuture<?> f = removed.pollFuture;
+            if (f != null) {
+                f.cancel(false);
+            }
         }
     }
 
-    private synchronized boolean ensureStarted() {
-        if (serverSocket != null && !serverSocket.isClosed() && port > 0) {
-            return true;
-        }
-        try {
-            InetAddress loopback = InetAddress.getByName("127.0.0.1");
-            ServerSocket ss = new ServerSocket(0, 32, loopback);
-            serverSocket = ss;
-            port = ss.getLocalPort();
-            Thread acceptThread = new Thread(() -> acceptLoop(ss), "kizu-hls-accept");
-            acceptThread.setDaemon(true);
-            acceptThread.start();
-            Log.i(TAG, "Local HLS ad-swap proxy listening on 127.0.0.1:" + port);
-            return true;
-        } catch (Throwable t) {
-            Log.e(TAG, "Failed to start local HLS proxy", t);
-            serverSocket = null;
-            port = -1;
-            return false;
-        }
-    }
-
-    private void acceptLoop(ServerSocket ss) {
-        while (!ss.isClosed()) {
+    private void startPolling(MonitorSession session, long initialDelayMs) {
+        session.pollFuture = KizuRuntime.scheduler().scheduleWithFixedDelay(() -> {
+            if (session.closed || !sessions.containsKey(session.id)) return;
             try {
-                Socket client = ss.accept();
-                workers.execute(() -> handleClient(client));
+                pollSession(session);
             } catch (Throwable t) {
-                if (!ss.isClosed()) {
-                    Log.w(TAG, "Accept error: " + t.getMessage());
-                }
+                Log.w(TAG, "Monitor poll error for " + session.login + ": " + t.getMessage());
             }
+        }, initialDelayMs, POLL_INTERVAL_MS, TimeUnit.MILLISECONDS);
+    }
+
+    private void pollSession(MonitorSession session) {
+        if (session.closed) return;
+        if (session.backupOnlyMode) {
+            pollBackupOnlySession(session);
+        } else {
+            pollPrimaryWithBackupSwap(session);
         }
     }
 
-    private void pruneExpiredSessions() {
-        long now = SystemClock.uptimeMillis();
-        for (Map.Entry<String, ProxySession> entry : sessions.entrySet()) {
-            ProxySession s = entry.getValue();
-            if (s == null || s.closed || now - s.lastAccessMs > SESSION_IDLE_EXPIRE_MS) {
-                sessions.remove(entry.getKey());
-            }
-        }
-    }
-
-    private void handleClient(Socket client) {
-        try (Socket sock = client) {
-            sock.setSoTimeout(CLIENT_SO_TIMEOUT_MS);
-            BufferedReader reader = new BufferedReader(
-                    new InputStreamReader(sock.getInputStream(), StandardCharsets.ISO_8859_1));
-            OutputStream out = sock.getOutputStream();
-
-            String requestLine = reader.readLine();
-            if (requestLine == null || requestLine.isEmpty()) return;
-
-            // Drain HTTP headers.
-            String headerLine;
-            while ((headerLine = reader.readLine()) != null && !headerLine.isEmpty()) {
-                // ignore
-            }
-
-            String[] parts = requestLine.split(" ");
-            if (parts.length < 2) {
-                writeStatus(out, 400, "Bad Request", false, "");
-                return;
-            }
-            String method = parts[0].toUpperCase(Locale.ROOT);
-            boolean headOnly = "HEAD".equals(method);
-            if (!"GET".equals(method) && !headOnly) {
-                writeStatus(out, 405, "Method Not Allowed", headOnly, "");
-                return;
-            }
-
-            String path = parts[1];
-            int qIdx = path.indexOf('?');
-            if (qIdx >= 0) path = path.substring(0, qIdx);
-
-            // Expected routes:
-            //   /s/{sid}/master.m3u8
-            //   /s/{sid}/v/{idx}.m3u8
-            if (!path.startsWith("/s/")) {
-                writeStatus(out, 404, "Not Found", headOnly, "");
-                return;
-            }
-            String rest = path.substring(3);
-            int slash = rest.indexOf('/');
-            if (slash <= 0) {
-                writeStatus(out, 404, "Not Found", headOnly, "");
-                return;
-            }
-            String sid = rest.substring(0, slash);
-            String sub = rest.substring(slash + 1);
-
-            ProxySession session = sessions.get(sid);
-            if (session == null || session.closed) {
-                writeStatus(out, 404, "Not Found", headOnly, "");
-                return;
-            }
-            session.lastAccessMs = SystemClock.uptimeMillis();
-
-            if ("master.m3u8".equals(sub)) {
-                String body = serveMaster(session);
-                if (body == null) {
-                    writeStatus(out, 502, "Bad Gateway", headOnly, "");
-                } else {
-                    writePlaylist(out, headOnly, body);
-                }
-                return;
-            }
-
-            if (sub.startsWith("v/") && sub.endsWith(".m3u8")) {
-                String idxStr = sub.substring(2, sub.length() - 5);
-                int idx;
-                try {
-                    idx = Integer.parseInt(idxStr);
-                } catch (NumberFormatException ignored) {
-                    writeStatus(out, 404, "Not Found", headOnly, "");
+    /**
+     * Used by {@link AdBypassOverlayPlayer}: monitors the currently playing backup stream; if an
+     * ad ever appears on it mid-break, switches to another clean backup playerType or triggers cover.
+     */
+    private void pollBackupOnlySession(MonitorSession session) {
+        String probeUrl = session.activeBackupProbeUrl;
+        if (probeUrl != null) {
+            HttpResult res = httpGetText(probeUrl);
+            if (res.body != null) {
+                AdDetection ad = detectStitchedAd(res.body);
+                if (!ad.hasAd) {
+                    notifyAdState(session, AdState.SWAPPED_TO_BACKUP, 0f);
                     return;
                 }
-                String body = serveVariant(session, idx);
-                if (body == null) {
-                    writeStatus(out, 502, "Bad Gateway", headOnly, "");
-                } else {
-                    writePlaylist(out, headOnly, body);
-                }
+                session.markCandidateFailed(session.activeBackupType);
+            } else if (res.code == 403 || res.code == 404 || res.code == 410) {
+                session.markCandidateFailed(session.activeBackupType);
+            } else {
+                // Transient network hiccup; don't disrupt playing stream.
                 return;
             }
-
-            writeStatus(out, 404, "Not Found", headOnly, "");
-        } catch (Throwable ignored) {
-            // Client closed connection or timed out.
         }
-    }
 
-    private String serveMaster(ProxySession session) {
-        String masterBody = session.preloadedMasterBody;
-        if (masterBody != null) {
-            session.preloadedMasterBody = null;
+        CleanBackupCandidate next = findCleanBackup(
+                session.login, session.activeBackupType, session.candidateFailedAtMs);
+        if (next != null) {
+            session.activeBackupType = next.playerType;
+            session.activeBackupMasterUri = next.masterUri;
+            session.activeBackupProbeUrl = next.probeVariantUrl;
+            notifySwapUri(session, next.masterUri);
+            notifyAdState(session, AdState.SWAPPED_TO_BACKUP, 0f);
         } else {
-            HttpResult res = httpGetText(session.primaryMasterUrl);
-            if (res.code == 403 || res.code == 404 || res.code == 410) {
-                Uri refreshed = MultiStreamApi.fetchPrimaryUsherUri(
-                        session.appContext, session.login, session.primaryPlayerType);
-                if (refreshed != null) {
-                    session.primaryMasterUrl = refreshed.toString();
-                    res = httpGetText(session.primaryMasterUrl);
-                }
-            }
-            masterBody = res.body;
+            notifyAdState(session, AdState.AD_BLOCKED_COVER, 15f);
         }
-        if (masterBody == null) return null;
-
-        List<VariantEntry> parsed = new ArrayList<>();
-        String rewritten = rewriteMasterPlaylist(session, masterBody, session.primaryMasterUrl, parsed);
-        synchronized (session.lock) {
-            session.variants = parsed;
-        }
-        return rewritten;
     }
 
-    private String rewriteMasterPlaylist(ProxySession session, String masterText, String baseUrl,
-                                         List<VariantEntry> outVariants) {
-        StringBuilder sb = new StringBuilder(masterText.length() + 512);
-        String[] lines = masterText.split("\\r?\\n");
-        int pendingHeight = 0;
-        int pendingBandwidth = 0;
-        String pendingGroup = "";
-        boolean expectStreamUri = false;
-
-        for (String line : lines) {
-            String trimmed = line.trim();
-            if (trimmed.isEmpty()) continue;
-
-            if (trimmed.startsWith("#EXT-X-STREAM-INF:")) {
-                pendingHeight = extractInt(RESOLUTION_PATTERN, trimmed, 0);
-                pendingBandwidth = extractInt(BANDWIDTH_PATTERN, trimmed, 0);
-                pendingGroup = extractString(VIDEO_GROUP_PATTERN, trimmed, "");
-                expectStreamUri = true;
-                sb.append(line).append('\n');
-                continue;
-            }
-
-            if (trimmed.startsWith("#EXT-X-MEDIA:")) {
-                Matcher m = URI_ATTR_PATTERN.matcher(line);
-                if (m.find()) {
-                    String abs = resolveUrl(baseUrl, m.group(1));
-                    int idx = outVariants.size();
-                    outVariants.add(new VariantEntry(idx, abs, 0, 0, "media_" + idx));
-                    String localUrl = "http://127.0.0.1:" + port + "/s/" + session.id + "/v/" + idx + ".m3u8";
-                    String replaced = line.substring(0, m.start(1)) + localUrl + line.substring(m.end(1));
-                    sb.append(replaced).append('\n');
-                } else {
-                    sb.append(line).append('\n');
-                }
-                continue;
-            }
-
-            if (!trimmed.startsWith("#")) {
-                String abs = resolveUrl(baseUrl, trimmed);
-                int idx = outVariants.size();
-                outVariants.add(new VariantEntry(
-                        idx,
-                        abs,
-                        expectStreamUri ? pendingHeight : 0,
-                        expectStreamUri ? pendingBandwidth : 0,
-                        expectStreamUri ? pendingGroup : ""));
-                expectStreamUri = false;
-                pendingHeight = 0;
-                pendingBandwidth = 0;
-                pendingGroup = "";
-                sb.append("http://127.0.0.1:").append(port)
-                        .append("/s/").append(session.id)
-                        .append("/v/").append(idx).append(".m3u8\n");
-                continue;
-            }
-
-            sb.append(line).append('\n');
-        }
-        return sb.toString();
-    }
-
-    private String serveVariant(ProxySession session, int variantIdx) {
-        VariantEntry variant;
-        synchronized (session.lock) {
-            if (variantIdx < 0 || variantIdx >= session.variants.size()) return null;
-            variant = session.variants.get(variantIdx);
+    /**
+     * Used by Mode A & Mode B: monitors the primary stream's media playlist and hot-swaps to a
+     * verified ad-free HTTPS backup stream during stitched ads, returning to primary once clean.
+     */
+    private void pollPrimaryWithBackupSwap(MonitorSession session) {
+        if (session.primaryProbeUrl == null) {
+            session.primaryProbeUrl = resolveProbeVariantUrl(session.primaryMasterUri.toString());
+            if (session.primaryProbeUrl == null) return;
         }
 
-        HttpResult primaryRes = httpGetText(variant.upstreamUrl);
+        HttpResult primaryRes = httpGetText(session.primaryProbeUrl);
         if (primaryRes.code == 403 || primaryRes.code == 404 || primaryRes.code == 410) {
-            if (refreshPrimaryVariants(session)) {
-                synchronized (session.lock) {
-                    if (variantIdx < session.variants.size()) {
-                        variant = session.variants.get(variantIdx);
-                    }
+            Uri refreshed = MultiStreamApi.fetchPrimaryUsherUri(
+                    session.appContext, session.login, session.primaryPlayerType);
+            if (refreshed != null) {
+                session.primaryMasterUri = refreshed;
+                session.primaryProbeUrl = resolveProbeVariantUrl(refreshed.toString());
+                if (session.primaryProbeUrl != null) {
+                    primaryRes = httpGetText(session.primaryProbeUrl);
                 }
-                primaryRes = httpGetText(variant.upstreamUrl);
             }
         }
-        if (primaryRes.body == null) return null;
+        if (primaryRes.body == null) return;
 
         AdDetection primaryAd = detectStitchedAd(primaryRes.body);
         if (!primaryAd.hasAd) {
-            boolean stayOnBackupForHysteresis = false;
-            synchronized (variant) {
-                if (variant.servingBackup) {
-                    variant.cleanPrimaryStreak++;
-                    if (variant.cleanPrimaryStreak < CLEAN_POLLS_BEFORE_RETURN) {
-                        stayOnBackupForHysteresis = true;
-                    }
-                } else {
-                    variant.cleanPrimaryStreak = CLEAN_POLLS_BEFORE_RETURN;
+            if (session.servingBackup) {
+                session.cleanPrimaryStreak++;
+                if (session.cleanPrimaryStreak < CLEAN_POLLS_BEFORE_RETURN) {
+                    return;
                 }
-            }
-            if (stayOnBackupForHysteresis) {
-                BackupResult held = fetchCleanBackupPlaylist(session, variant.height, true);
-                if (held != null) {
-                    return rewriteMediaPlaylist(held.body, held.url, variant, held.sourceKey);
-                }
+                session.servingBackup = false;
+                session.activeBackupType = null;
+                session.activeBackupMasterUri = null;
+                session.activeBackupProbeUrl = null;
+                Log.i(TAG, "Ad ended on " + session.login + ", restoring primary HTTPS stream");
+                notifySwapUri(session, session.primaryMasterUri);
             }
             notifyAdState(session, AdState.NONE, 0f);
-            return rewriteMediaPlaylist(primaryRes.body, variant.upstreamUrl, variant, "primary");
+            return;
         }
 
-        // Primary media playlist contains a Twitch stitched ad!
-        synchronized (variant) {
-            variant.cleanPrimaryStreak = 0;
+        // Primary has a stitched ad!
+        session.cleanPrimaryStreak = 0;
+
+        if (session.servingBackup && session.activeBackupProbeUrl != null) {
+            HttpResult backupRes = httpGetText(session.activeBackupProbeUrl);
+            if (backupRes.body != null && !detectStitchedAd(backupRes.body).hasAd) {
+                notifyAdState(session, AdState.SWAPPED_TO_BACKUP, primaryAd.remainingSeconds);
+                return;
+            }
+            session.markCandidateFailed(session.activeBackupType);
+            session.servingBackup = false;
         }
 
-        BackupResult backup = fetchCleanBackupPlaylist(session, variant.height, false);
+        CleanBackupCandidate backup = findCleanBackup(
+                session.login, session.primaryPlayerType, session.candidateFailedAtMs);
         if (backup != null) {
+            session.servingBackup = true;
+            session.activeBackupType = backup.playerType;
+            session.activeBackupMasterUri = backup.masterUri;
+            session.activeBackupProbeUrl = backup.probeVariantUrl;
+            Log.i(TAG, "Swapping " + session.login + " to clean HTTPS backup playerType=" + backup.playerType);
+            notifySwapUri(session, backup.masterUri);
             notifyAdState(session, AdState.SWAPPED_TO_BACKUP, primaryAd.remainingSeconds);
-            return rewriteMediaPlaylist(backup.body, backup.url, variant, backup.sourceKey);
+        } else {
+            notifyAdState(session, AdState.AD_BLOCKED_COVER, primaryAd.remainingSeconds);
         }
-
-        // Backup streams also contained ads or were unavailable -> mute & cover slot during ad.
-        notifyAdState(session, AdState.AD_BLOCKED_COVER, primaryAd.remainingSeconds);
-        return rewriteMediaPlaylist(primaryRes.body, variant.upstreamUrl, variant, "primary");
     }
 
-    private boolean refreshPrimaryVariants(ProxySession session) {
-        Uri refreshed = MultiStreamApi.fetchPrimaryUsherUri(
-                session.appContext, session.login, session.primaryPlayerType);
-        if (refreshed == null) return false;
-        HttpResult res = httpGetText(refreshed.toString());
-        if (res.body == null) return false;
-
-        List<VariantEntry> fresh = new ArrayList<>();
-        rewriteMasterPlaylist(session, res.body, refreshed.toString(), fresh);
-        if (fresh.isEmpty()) return false;
-
-        synchronized (session.lock) {
-            session.primaryMasterUrl = refreshed.toString();
-            for (int i = 0; i < session.variants.size(); i++) {
-                VariantEntry oldV = session.variants.get(i);
-                VariantEntry match = pickBestVariant(fresh, oldV.height, oldV.videoGroup);
-                if (match != null) {
-                    oldV.upstreamUrl = match.upstreamUrl;
-                }
-            }
-        }
-        return true;
-    }
-
-    private BackupResult fetchCleanBackupPlaylist(ProxySession session, int targetHeight, boolean cacheOnly) {
+    private static CleanBackupCandidate findCleanBackup(
+            String login, String skipType, Map<String, Long> cooldowns) {
         long now = SystemClock.uptimeMillis();
-
-        // 1. Try currently cached backup variant first for fast ~150ms response.
-        String cachedUrl;
-        String cachedType;
-        long cachedAt;
-        synchronized (session.lock) {
-            cachedUrl = session.cachedBackupUrl;
-            cachedType = session.cachedBackupPlayerType;
-            cachedAt = session.cachedBackupFetchedAtMs;
-        }
-        if (cachedUrl != null && now - cachedAt < BACKUP_CACHE_TTL_MS) {
-            HttpResult res = httpGetText(cachedUrl);
-            if (res.body != null && !detectStitchedAd(res.body).hasAd) {
-                return new BackupResult(res.body, cachedUrl, "backup:" + cachedType);
-            }
-            synchronized (session.lock) {
-                if (cachedUrl.equals(session.cachedBackupUrl)) {
-                    session.cachedBackupUrl = null;
-                }
-                if (cachedType != null) {
-                    session.candidateFailedAtMs.put(cachedType, now);
-                }
-            }
-        }
-        if (cacheOnly) return null;
-
-        // 2. Try up to MAX_CANDIDATES_PER_POLL alternate playerTypes not in cooldown.
-        int tried = 0;
         for (String candidate : BACKUP_PLAYER_TYPES) {
-            if (session.closed) return null;
-            if (tried >= MAX_CANDIDATES_PER_POLL) break;
-
-            Long failedAt;
-            synchronized (session.lock) {
-                failedAt = session.candidateFailedAtMs.get(candidate);
+            if (candidate.equals(skipType)) continue;
+            if (cooldowns != null) {
+                Long failedAt = cooldowns.get(candidate);
+                if (failedAt != null && now - failedAt < CANDIDATE_COOLDOWN_MS) {
+                    continue;
+                }
             }
-            if (failedAt != null && now - failedAt < CANDIDATE_COOLDOWN_MS) {
+            Uri masterUri = MultiStreamApi.fetchBackupUsherUri(login, candidate);
+            if (masterUri == null) {
+                if (cooldowns != null) cooldowns.put(candidate, now);
                 continue;
             }
-            tried++;
-
-            Uri backupMasterUri = MultiStreamApi.fetchBackupUsherUri(session.login, candidate);
-            if (backupMasterUri == null) {
-                markCandidateFailed(session, candidate, now);
+            String probeUrl = resolveProbeVariantUrl(masterUri.toString());
+            if (probeUrl == null) {
+                if (cooldowns != null) cooldowns.put(candidate, now);
                 continue;
             }
-            HttpResult masterRes = httpGetText(backupMasterUri.toString());
-            if (masterRes.body == null) {
-                markCandidateFailed(session, candidate, now);
-                continue;
-            }
-            List<VariantEntry> backupVariants = parseMasterVariants(masterRes.body, backupMasterUri.toString());
-            VariantEntry picked = pickBestVariant(backupVariants, targetHeight, null);
-            if (picked == null || picked.upstreamUrl == null) {
-                markCandidateFailed(session, candidate, now);
-                continue;
-            }
-            HttpResult mediaRes = httpGetText(picked.upstreamUrl);
+            HttpResult mediaRes = httpGetText(probeUrl);
             if (mediaRes.body == null || detectStitchedAd(mediaRes.body).hasAd) {
-                markCandidateFailed(session, candidate, now);
+                if (cooldowns != null) cooldowns.put(candidate, now);
                 continue;
             }
-
-            synchronized (session.lock) {
-                session.cachedBackupUrl = picked.upstreamUrl;
-                session.cachedBackupPlayerType = candidate;
-                session.cachedBackupFetchedAtMs = SystemClock.uptimeMillis();
-                session.candidateFailedAtMs.remove(candidate);
-            }
-            Log.i(TAG, "Swapped " + session.login + " to clean backup playerType=" + candidate
-                    + " (" + picked.height + "p)");
-            return new BackupResult(mediaRes.body, picked.upstreamUrl, "backup:" + candidate);
+            if (cooldowns != null) cooldowns.remove(candidate);
+            return new CleanBackupCandidate(candidate, masterUri, probeUrl);
         }
         return null;
     }
 
-    private static void markCandidateFailed(ProxySession session, String candidate, long now) {
-        synchronized (session.lock) {
-            session.candidateFailedAtMs.put(candidate, now);
-        }
+    private static String resolveProbeVariantUrl(String masterUrl) {
+        HttpResult masterRes = httpGetText(masterUrl);
+        if (masterRes.body == null) return null;
+        List<VariantEntry> variants = parseMasterVariants(masterRes.body, masterUrl);
+        VariantEntry picked = pickBestVariant(variants, 720);
+        return picked == null ? null : picked.upstreamUrl;
     }
 
     private static List<VariantEntry> parseMasterVariants(String masterText, String baseUrl) {
@@ -589,7 +336,6 @@ final class MultiStreamHlsProxy {
         String[] lines = masterText.split("\\r?\\n");
         int pendingHeight = 0;
         int pendingBandwidth = 0;
-        String pendingGroup = "";
         boolean expectStreamUri = false;
         for (String line : lines) {
             String trimmed = line.trim();
@@ -597,172 +343,32 @@ final class MultiStreamHlsProxy {
             if (trimmed.startsWith("#EXT-X-STREAM-INF:")) {
                 pendingHeight = extractInt(RESOLUTION_PATTERN, trimmed, 0);
                 pendingBandwidth = extractInt(BANDWIDTH_PATTERN, trimmed, 0);
-                pendingGroup = extractString(VIDEO_GROUP_PATTERN, trimmed, "");
                 expectStreamUri = true;
             } else if (!trimmed.startsWith("#")) {
                 if (expectStreamUri) {
-                    out.add(new VariantEntry(out.size(), resolveUrl(baseUrl, trimmed),
-                            pendingHeight, pendingBandwidth, pendingGroup));
+                    out.add(new VariantEntry(resolveUrl(baseUrl, trimmed), pendingHeight, pendingBandwidth));
                 }
                 expectStreamUri = false;
                 pendingHeight = 0;
                 pendingBandwidth = 0;
-                pendingGroup = "";
             }
         }
         return out;
     }
 
-    private static VariantEntry pickBestVariant(List<VariantEntry> variants, int targetHeight, String preferredGroup) {
+    private static VariantEntry pickBestVariant(List<VariantEntry> variants, int targetHeight) {
         if (variants == null || variants.isEmpty()) return null;
-        if (preferredGroup != null && !preferredGroup.isEmpty()) {
-            for (VariantEntry v : variants) {
-                if (preferredGroup.equals(v.videoGroup)) return v;
-            }
-        }
         VariantEntry best = null;
-        if (targetHeight > 0) {
-            int bestDiff = Integer.MAX_VALUE;
-            for (VariantEntry v : variants) {
-                if (v.height <= 0) continue;
-                int diff = Math.abs(v.height - targetHeight);
-                if (best == null || diff < bestDiff || (diff == bestDiff && v.bandwidth > best.bandwidth)) {
-                    best = v;
-                    bestDiff = diff;
-                }
-            }
-        }
-        if (best != null) return best;
-        // Fallback: highest video variant (preferring video over audio-only).
+        int bestDiff = Integer.MAX_VALUE;
         for (VariantEntry v : variants) {
-            if (best == null || v.height > best.height
-                    || (v.height == best.height && v.bandwidth > best.bandwidth)) {
+            if (v.height <= 0) continue;
+            int diff = Math.abs(v.height - targetHeight);
+            if (best == null || diff < bestDiff || (diff == bestDiff && v.bandwidth > best.bandwidth)) {
                 best = v;
+                bestDiff = diff;
             }
         }
-        return best;
-    }
-
-    /**
-     * Rewrites a media playlist so that:
-     * 1. Every relative URI (segments, EXT-X-MAP, EXT-X-PART, EXT-X-TWITCH-PREFETCH) is resolved
-     *    against the upstream CDN playlist URL (so segments never hit 127.0.0.1).
-     * 2. Primary <-> Backup stream transitions maintain monotonic {@code EXT-X-MEDIA-SEQUENCE} and
-     *    RFC 8216 {@code EXT-X-DISCONTINUITY} / {@code EXT-X-DISCONTINUITY-SEQUENCE}.
-     */
-    private static String rewriteMediaPlaylist(String rawPlaylist, String upstreamUrl,
-                                               VariantEntry state, String sourceKey) {
-        String[] lines = rawPlaylist.split("\\r?\\n");
-        long parsedSeq = 0L;
-        boolean hasMediaSeq = false;
-        for (String line : lines) {
-            String t = line.trim();
-            if (t.startsWith("#EXT-X-MEDIA-SEQUENCE:")) {
-                try {
-                    parsedSeq = Long.parseLong(t.substring("#EXT-X-MEDIA-SEQUENCE:".length()).trim());
-                    hasMediaSeq = true;
-                } catch (NumberFormatException ignored) {}
-                break;
-            }
-        }
-
-        long adjustedSeq;
-        int discSeqHeader;
-        int insertDiscBeforeSegIdx = -1;
-
-        synchronized (state) {
-            boolean isBackup = !"primary".equals(sourceKey);
-            boolean switched = state.activeSourceKey != null && !state.activeSourceKey.equals(sourceKey);
-
-            if (!hasMediaSeq) {
-                adjustedSeq = Math.max(0L, state.lastServedMediaSeq);
-            } else if (switched) {
-                long minNext = state.lastServedMediaSeq >= 0L ? state.lastServedMediaSeq + 1L : parsedSeq;
-                adjustedSeq = Math.max(parsedSeq, minNext);
-                state.mediaSeqOffset = adjustedSeq - parsedSeq;
-                if (state.discontinuityAtSeq >= 0L) {
-                    state.baseDiscontinuitySeq = state.currentDiscontinuitySeq;
-                }
-                state.currentDiscontinuitySeq++;
-                state.discontinuityAtSeq = adjustedSeq;
-            } else {
-                adjustedSeq = parsedSeq + state.mediaSeqOffset;
-                if (state.lastServedMediaSeq >= 0L && adjustedSeq < state.lastServedMediaSeq) {
-                    state.mediaSeqOffset += (state.lastServedMediaSeq - adjustedSeq);
-                    adjustedSeq = state.lastServedMediaSeq;
-                }
-            }
-
-            if (state.discontinuityAtSeq >= 0L) {
-                if (adjustedSeq > state.discontinuityAtSeq) {
-                    state.baseDiscontinuitySeq = state.currentDiscontinuitySeq;
-                    state.discontinuityAtSeq = -1L;
-                } else {
-                    long offset = state.discontinuityAtSeq - adjustedSeq;
-                    if (offset >= 0L && offset < 128L) {
-                        insertDiscBeforeSegIdx = (int) offset;
-                    }
-                }
-            }
-
-            discSeqHeader = state.baseDiscontinuitySeq;
-            state.lastServedMediaSeq = adjustedSeq;
-            state.activeSourceKey = sourceKey;
-            state.servingBackup = isBackup;
-        }
-
-        StringBuilder sb = new StringBuilder(rawPlaylist.length() + 256);
-        boolean wroteDiscSeq = false;
-        int segmentIndex = 0;
-        boolean discInserted = false;
-
-        for (String line : lines) {
-            String trimmed = line.trim();
-            if (trimmed.isEmpty()) continue;
-
-            if (trimmed.startsWith("#EXT-X-MEDIA-SEQUENCE:")) {
-                sb.append("#EXT-X-MEDIA-SEQUENCE:").append(adjustedSeq).append('\n');
-                if (discSeqHeader > 0) {
-                    sb.append("#EXT-X-DISCONTINUITY-SEQUENCE:").append(discSeqHeader).append('\n');
-                    wroteDiscSeq = true;
-                }
-                continue;
-            }
-            if (trimmed.startsWith("#EXT-X-DISCONTINUITY-SEQUENCE:")) {
-                if (!wroteDiscSeq && discSeqHeader > 0) {
-                    sb.append("#EXT-X-DISCONTINUITY-SEQUENCE:").append(discSeqHeader).append('\n');
-                    wroteDiscSeq = true;
-                }
-                continue;
-            }
-            if (trimmed.startsWith("#EXT-X-TWITCH-PREFETCH:")) {
-                String prefetchUri = trimmed.substring("#EXT-X-TWITCH-PREFETCH:".length()).trim();
-                sb.append("#EXT-X-TWITCH-PREFETCH:").append(resolveUrl(upstreamUrl, prefetchUri)).append('\n');
-                continue;
-            }
-            if (trimmed.startsWith("#EXT-X-MAP:")
-                    || trimmed.startsWith("#EXT-X-PART:")
-                    || trimmed.startsWith("#EXT-X-PRELOAD-HINT:")
-                    || trimmed.startsWith("#EXT-X-KEY:")) {
-                sb.append(resolveUriAttribute(line, upstreamUrl)).append('\n');
-                continue;
-            }
-            if (trimmed.startsWith("#EXTINF:")) {
-                if (!discInserted && insertDiscBeforeSegIdx == segmentIndex) {
-                    sb.append("#EXT-X-DISCONTINUITY\n");
-                    discInserted = true;
-                }
-                sb.append(line).append('\n');
-                segmentIndex++;
-                continue;
-            }
-            if (!trimmed.startsWith("#")) {
-                sb.append(resolveUrl(upstreamUrl, trimmed)).append('\n');
-                continue;
-            }
-            sb.append(line).append('\n');
-        }
-        return sb.toString();
+        return best != null ? best : variants.get(0);
     }
 
     private static AdDetection detectStitchedAd(String playlistText) {
@@ -852,7 +458,6 @@ final class MultiStreamHlsProxy {
     private static long parseIso8601Utc(String iso) {
         if (iso == null || iso.isEmpty()) return 0L;
         String clean = iso.trim();
-        // Strip sub-millisecond fractional digits if present (e.g. .123456Z -> .123Z).
         int dot = clean.indexOf('.');
         if (dot > 0 && clean.endsWith("Z")) {
             String frac = clean.substring(dot + 1, clean.length() - 1);
@@ -879,7 +484,19 @@ final class MultiStreamHlsProxy {
         return 0L;
     }
 
-    private void notifyAdState(ProxySession session, AdState nextState, float remainingSeconds) {
+    private void notifySwapUri(MonitorSession session, Uri nextUri) {
+        if (session.closed || nextUri == null) return;
+        AdStateListener l = session.listener;
+        if (l == null) return;
+        main.post(() -> {
+            if (!session.closed) {
+                AdStateListener cur = session.listener;
+                if (cur != null) cur.onSwapStreamUri(nextUri);
+            }
+        });
+    }
+
+    private void notifyAdState(MonitorSession session, AdState nextState, float remainingSeconds) {
         if (session.closed) return;
         boolean shouldDispatch;
         synchronized (session.lock) {
@@ -934,35 +551,6 @@ final class MultiStreamHlsProxy {
         }
     }
 
-    private static void writePlaylist(OutputStream out, boolean headOnly, String body) throws Exception {
-        byte[] bytes = body.getBytes(StandardCharsets.UTF_8);
-        String headers = "HTTP/1.1 200 OK\r\n"
-                + "Content-Type: application/vnd.apple.mpegurl; charset=utf-8\r\n"
-                + "Content-Length: " + bytes.length + "\r\n"
-                + "Cache-Control: no-cache, no-store\r\n"
-                + "Access-Control-Allow-Origin: *\r\n"
-                + "Connection: close\r\n\r\n";
-        out.write(headers.getBytes(StandardCharsets.ISO_8859_1));
-        if (!headOnly) {
-            out.write(bytes);
-        }
-        out.flush();
-    }
-
-    private static void writeStatus(OutputStream out, int code, String reason,
-                                    boolean headOnly, String body) throws Exception {
-        byte[] bytes = body.getBytes(StandardCharsets.UTF_8);
-        String headers = "HTTP/1.1 " + code + " " + reason + "\r\n"
-                + "Content-Type: text/plain; charset=utf-8\r\n"
-                + "Content-Length: " + bytes.length + "\r\n"
-                + "Connection: close\r\n\r\n";
-        out.write(headers.getBytes(StandardCharsets.ISO_8859_1));
-        if (!headOnly && bytes.length > 0) {
-            out.write(bytes);
-        }
-        out.flush();
-    }
-
     private static String resolveUrl(String baseUrl, String target) {
         if (target == null) return "";
         String t = target.trim();
@@ -974,13 +562,6 @@ final class MultiStreamHlsProxy {
         }
     }
 
-    private static String resolveUriAttribute(String line, String baseUrl) {
-        Matcher m = URI_ATTR_PATTERN.matcher(line);
-        if (!m.find()) return line;
-        String resolved = resolveUrl(baseUrl, m.group(1));
-        return line.substring(0, m.start(1)) + resolved + line.substring(m.end(1));
-    }
-
     private static int extractInt(Pattern pattern, String input, int fallback) {
         Matcher m = pattern.matcher(input);
         if (!m.find()) return fallback;
@@ -989,11 +570,6 @@ final class MultiStreamHlsProxy {
         } catch (NumberFormatException ignored) {
             return fallback;
         }
-    }
-
-    private static String extractString(Pattern pattern, String input, String fallback) {
-        Matcher m = pattern.matcher(input);
-        return m.find() ? m.group(1) : fallback;
     }
 
     private static final class HttpResult {
@@ -1017,70 +593,67 @@ final class MultiStreamHlsProxy {
         }
     }
 
-    private static final class BackupResult {
-        final String body;
-        final String url;
-        final String sourceKey;
+    private static final class CleanBackupCandidate {
+        final String playerType;
+        final Uri masterUri;
+        final String probeVariantUrl;
 
-        BackupResult(String body, String url, String sourceKey) {
-            this.body = body;
-            this.url = url;
-            this.sourceKey = sourceKey;
+        CleanBackupCandidate(String playerType, Uri masterUri, String probeVariantUrl) {
+            this.playerType = playerType;
+            this.masterUri = masterUri;
+            this.probeVariantUrl = probeVariantUrl;
         }
     }
 
     private static final class VariantEntry {
-        final int index;
-        volatile String upstreamUrl;
+        final String upstreamUrl;
         final int height;
         final int bandwidth;
-        final String videoGroup;
 
-        String activeSourceKey;
-        boolean servingBackup;
-        int cleanPrimaryStreak = CLEAN_POLLS_BEFORE_RETURN;
-        long lastServedMediaSeq = -1L;
-        long mediaSeqOffset;
-        int baseDiscontinuitySeq;
-        int currentDiscontinuitySeq;
-        long discontinuityAtSeq = -1L;
-
-        VariantEntry(int index, String upstreamUrl, int height, int bandwidth, String videoGroup) {
-            this.index = index;
+        VariantEntry(String upstreamUrl, int height, int bandwidth) {
             this.upstreamUrl = upstreamUrl;
             this.height = height;
             this.bandwidth = bandwidth;
-            this.videoGroup = videoGroup == null ? "" : videoGroup;
         }
     }
 
-    private static final class ProxySession {
+    private static final class MonitorSession {
         final String id;
         final Context appContext;
         final String login;
         final String primaryPlayerType;
+        final boolean backupOnlyMode;
         final Object lock = new Object();
         final ConcurrentHashMap<String, Long> candidateFailedAtMs = new ConcurrentHashMap<>();
 
-        volatile String primaryMasterUrl;
-        volatile String preloadedMasterBody;
+        volatile Uri primaryMasterUri;
+        volatile String primaryProbeUrl;
         volatile AdStateListener listener;
+        volatile ScheduledFuture<?> pollFuture;
         volatile boolean closed;
-        volatile long lastAccessMs = SystemClock.uptimeMillis();
 
-        List<VariantEntry> variants = new ArrayList<>();
-        String cachedBackupUrl;
-        String cachedBackupPlayerType;
-        long cachedBackupFetchedAtMs;
+        boolean servingBackup;
+        int cleanPrimaryStreak = CLEAN_POLLS_BEFORE_RETURN;
+        String activeBackupType;
+        Uri activeBackupMasterUri;
+        String activeBackupProbeUrl;
         AdState lastAdState = AdState.NONE;
         float lastReportedRemainingSec;
 
-        ProxySession(String id, Context appContext, String login, String primaryPlayerType, String primaryMasterUrl) {
+        MonitorSession(String id, Context appContext, String login, String primaryPlayerType,
+                       Uri primaryMasterUri, boolean backupOnlyMode) {
             this.id = id;
             this.appContext = appContext;
             this.login = login;
             this.primaryPlayerType = primaryPlayerType;
-            this.primaryMasterUrl = primaryMasterUrl;
+            this.primaryMasterUri = primaryMasterUri;
+            this.backupOnlyMode = backupOnlyMode;
+        }
+
+        void markCandidateFailed(String type) {
+            if (type != null) {
+                candidateFailedAtMs.put(type, SystemClock.uptimeMillis());
+            }
         }
     }
 }

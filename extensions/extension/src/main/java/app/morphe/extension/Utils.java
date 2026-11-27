@@ -54,6 +54,7 @@ public final class Utils {
                     try { BottomCreateButtonHider.onActivityResumed(activity); } catch (Throwable ignored) {}
                     try { HiddenView.recheckAll(); } catch (Throwable ignored) {}
                     try { MultiStreamManager.onActivityResumed(activity); } catch (Throwable ignored) {}
+                    try { NetworkQualityManager.onActivityResumed(); } catch (Throwable ignored) {}
                 }
                 @Override public void onActivityPaused(Activity activity) {
                     try { MultiStreamManager.onActivityPaused(activity); } catch (Throwable ignored) {}

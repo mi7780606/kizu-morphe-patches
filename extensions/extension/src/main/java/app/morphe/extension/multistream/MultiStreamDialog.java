@@ -1179,7 +1179,21 @@ final class MultiStreamDialog {
                     }
                     proxySessionId = res.proxySessionId;
                     if (proxySessionId != null) {
-                        MultiStreamHlsProxy.getInstance().setAdStateListener(proxySessionId, this::onAdStateChanged);
+                        MultiStreamHlsProxy.getInstance().setAdStateListener(proxySessionId,
+                                new MultiStreamHlsProxy.AdStateListener() {
+                                    @Override
+                                    public void onAdStateChanged(MultiStreamHlsProxy.AdState state, float remainingSeconds) {
+                                        StreamSlot.this.onAdStateChanged(state, remainingSeconds);
+                                    }
+
+                                    @Override
+                                    public void onSwapStreamUri(android.net.Uri nextPlayUri) {
+                                        if (!dismissed && slots.contains(StreamSlot.this) && nextPlayUri != null) {
+                                            int cap = targetAutoHeightForSlot(slots.indexOf(StreamSlot.this));
+                                            player.load(nextPlayUri, res.directUsherUri, cap);
+                                        }
+                                    }
+                                });
                     }
                     player.load(res.playUri, res.directUsherUri, targetAutoHeight);
                 });

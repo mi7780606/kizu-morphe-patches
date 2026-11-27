@@ -415,7 +415,20 @@ final class MultiStreamPipOverlay {
                 }
                 proxySessionId = res.proxySessionId;
                 if (proxySessionId != null) {
-                    MultiStreamHlsProxy.getInstance().setAdStateListener(proxySessionId, this::onAdStateChanged);
+                    MultiStreamHlsProxy.getInstance().setAdStateListener(proxySessionId,
+                            new MultiStreamHlsProxy.AdStateListener() {
+                                @Override
+                                public void onAdStateChanged(MultiStreamHlsProxy.AdState state, float remainingSeconds) {
+                                    MultiStreamPipOverlay.this.onAdStateChanged(state, remainingSeconds);
+                                }
+
+                                @Override
+                                public void onSwapStreamUri(android.net.Uri nextPlayUri) {
+                                    if (!dismissed && nextPlayUri != null) {
+                                        player.load(nextPlayUri, res.directUsherUri, 480);
+                                    }
+                                }
+                            });
                 }
                 player.load(res.playUri, res.directUsherUri, 480);
             });

@@ -173,11 +173,11 @@ final class MultiStreamApi {
                 return new StreamLoadResult(resolved != null ? resolved : usherUri, usherUri, null, null);
             }
 
-            // Hybrid local 127.0.0.1 HLS ad-swap proxy for non-subscribed streams without external proxy.
+            // Direct HTTPS playback + background stitched-ad monitor/hot-swap for non-subscribed streams.
             MultiStreamHlsProxy.SessionHandle handle = MultiStreamHlsProxy.getInstance()
                     .registerSession(context, login, playerType, usherUri);
-            if (handle != null && handle.localMasterUri != null) {
-                return new StreamLoadResult(handle.localMasterUri, usherUri, handle.sessionId, null);
+            if (handle != null && handle.initialPlayUri != null) {
+                return new StreamLoadResult(handle.initialPlayUri, usherUri, handle.sessionId, null);
             }
             return new StreamLoadResult(usherUri, usherUri, null, null);
         } catch (Throwable t) {

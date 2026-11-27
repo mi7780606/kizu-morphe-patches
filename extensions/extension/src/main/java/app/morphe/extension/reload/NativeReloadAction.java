@@ -17,6 +17,7 @@ public final class NativeReloadAction {
 
     public static synchronized void bind(Object owner, NativeReloadHost host) {
         actions.put(owner, new NativeReloadAction(host));
+        try { app.morphe.extension.player.NetworkQualityManager.bindNativeReloadCandidate(host); } catch (Throwable ignored) {}
     }
 
     public static synchronized NativeReloadAction forVolume(Object callback) {

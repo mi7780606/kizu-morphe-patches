@@ -122,6 +122,7 @@ public final class ChannelPoints {
             lastSuccessfulClaimKey = null;
             log("active channel id=" + newId + " login=" + newLogin);
             if (newLogin != null) {
+                try { app.morphe.extension.ads.BlockAdsPatch.onActiveChannelChanged(newLogin); } catch (Throwable ignored) {}
                 try { AdBypassOverlayPlayer.stopIfChannelDiffers(newLogin); } catch (Throwable ignored) {}
             }
         }
