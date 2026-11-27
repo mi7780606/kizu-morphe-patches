@@ -2,6 +2,7 @@ package app.morphe.extension.multistream;
 
 import android.app.Activity;
 import android.content.Context;
+import android.content.res.Configuration;
 import android.graphics.Color;
 import android.graphics.Typeface;
 import android.os.Handler;
@@ -60,6 +61,7 @@ final class MultiStreamPipOverlay {
     private final View.OnLayoutChangeListener decorLayoutListener;
     private final Runnable hideHudRunnable = this::hideHud;
     private final Runnable clearAdCoverRunnable = this::clearAdCoverNow;
+    private final Runnable pipSyncRunnable = this::syncSystemPipVisibility;
 
     private String channelLogin;
     private String displayName;
@@ -69,6 +71,12 @@ final class MultiStreamPipOverlay {
     private float currentWidthRatio = WIDTH_RATIOS[1];
     private boolean danmakuEnabled = true;
     private boolean dismissed;
+    private boolean lifecyclePaused;
+    private boolean hiddenForSystemPip;
+    private boolean hasSavedPrePipLayout;
+    private int savedPrePipLeft;
+    private int savedPrePipTop;
+    private float savedPrePipWidthRatio;
     private boolean positionInitialized;
     private boolean lastFullWidthVisual;
 
@@ -84,7 +92,13 @@ final class MultiStreamPipOverlay {
             try { decor.removeView(stale); } catch (Throwable ignored) {}
         }
 
-        card = new FrameLayout(activity);
+        card = new FrameLayout(activity) {
+            @Override
+            protected void onConfigurationChanged(Configuration newConfig) {
+                super.onConfigurationChanged(newConfig);
+                syncSystemPipVisibility();
+            }
+        };
         card.setTag(TAG_VIEW);
         applyCardChrome(false);
         card.setClipToOutline(true);
@@ -158,6 +172,7 @@ final class MultiStreamPipOverlay {
                 TwitchUi.dp(activity, 4f), TwitchUi.dp(activity, 4f));
 
         sizeBtn = miniChip(activity, SIZE_LABELS[sizeIndex], v -> {
+            hasSavedPrePipLayout = false;
             sizeIndex = (sizeIndex + 1) % WIDTH_RATIOS.length;
             currentWidthRatio = WIDTH_RATIOS[sizeIndex];
             applySizeAndClamp(true);
@@ -217,7 +232,8 @@ final class MultiStreamPipOverlay {
         player.attachTextureView(textureView);
 
         ircClient = new MultiStreamIrcClient(activity, (channel, comment) -> {
-            if (!dismissed && danmakuEnabled && channel != null && channel.equalsIgnoreCase(channelLogin)) {
+            if (!dismissed && !hiddenForSystemPip && danmakuEnabled
+                    && channel != null && channel.equalsIgnoreCase(channelLogin)) {
                 danmakuView.addComment(comment);
             }
         });
@@ -230,11 +246,19 @@ final class MultiStreamPipOverlay {
         applyDanmakuState();
 
         decorLayoutListener = (v, l, t, r, b, ol, ot, or, ob) -> {
-            if (!dismissed && (r - l != or - ol || b - t != ob - ot)) {
+            if (dismissed) return;
+            syncSystemPipVisibility();
+            if (hiddenForSystemPip) return;
+            if (hasSavedPrePipLayout) {
+                restorePrePipLayoutIfReady();
+                return;
+            }
+            if (r - l != or - ol || b - t != ob - ot) {
                 applySizeAndClamp(true);
             }
         };
         decor.addOnLayoutChangeListener(decorLayoutListener);
+        syncSystemPipVisibility();
 
         reloadStream();
         ircClient.joinChannel(channelLogin);
@@ -270,26 +294,100 @@ final class MultiStreamPipOverlay {
 
     void pause() {
         if (dismissed) return;
+        lifecyclePaused = true;
         player.pause();
         danmakuView.setPaused(true);
+        syncSystemPipVisibility();
+        main.removeCallbacks(pipSyncRunnable);
+        main.post(pipSyncRunnable);
+        main.postDelayed(pipSyncRunnable, 120L);
     }
 
     void resume() {
         if (dismissed) return;
-        player.resume();
-        danmakuView.setPaused(!danmakuEnabled);
+        lifecyclePaused = false;
+        syncSystemPipVisibility();
+        main.removeCallbacks(pipSyncRunnable);
+        main.post(pipSyncRunnable);
+        if (!hiddenForSystemPip) {
+            player.resume();
+            danmakuView.setPaused(!danmakuEnabled);
+        }
     }
 
     void dismiss() {
         if (dismissed) return;
         dismissed = true;
         main.removeCallbacks(hideHudRunnable);
+        main.removeCallbacks(pipSyncRunnable);
         releaseProxySession();
         try { decor.removeOnLayoutChangeListener(decorLayoutListener); } catch (Throwable ignored) {}
         player.release();
         ircClient.disconnect();
         danmakuView.clear();
         try { decor.removeView(card); } catch (Throwable ignored) {}
+    }
+
+    private boolean isActivityInSystemPip() {
+        Activity act = activityRef.get();
+        return act != null && !act.isDestroyed() && act.isInPictureInPictureMode();
+    }
+
+    private void syncSystemPipVisibility() {
+        if (dismissed) return;
+        boolean inSystemPip = isActivityInSystemPip();
+        if (inSystemPip && !hiddenForSystemPip) {
+            enterSystemPipHidden();
+        } else if (!inSystemPip && hiddenForSystemPip) {
+            exitSystemPipHidden();
+        }
+    }
+
+    private void enterSystemPipHidden() {
+        FrameLayout.LayoutParams lp = (FrameLayout.LayoutParams) card.getLayoutParams();
+        if (lp != null && positionInitialized && !hasSavedPrePipLayout) {
+            savedPrePipLeft = lp.leftMargin;
+            savedPrePipTop = lp.topMargin;
+            savedPrePipWidthRatio = currentWidthRatio;
+            hasSavedPrePipLayout = true;
+        }
+        hiddenForSystemPip = true;
+        card.setVisibility(View.GONE);
+        player.pause();
+        danmakuView.setPaused(true);
+    }
+
+    private void exitSystemPipHidden() {
+        hiddenForSystemPip = false;
+        card.setVisibility(View.VISIBLE);
+        restorePrePipLayoutIfReady();
+        if (!lifecyclePaused) {
+            player.resume();
+            danmakuView.setPaused(!danmakuEnabled);
+        }
+    }
+
+    private void restorePrePipLayoutIfReady() {
+        if (!hasSavedPrePipLayout) {
+            applySizeAndClamp(false);
+            return;
+        }
+        int dw = decor.getWidth();
+        int dh = decor.getHeight();
+        int minAppDim = TwitchUi.dp(decor.getContext(), 280f);
+        boolean fullSizeRestored = dw >= minAppDim && dh >= minAppDim;
+
+        currentWidthRatio = savedPrePipWidthRatio;
+        FrameLayout.LayoutParams lp = (FrameLayout.LayoutParams) card.getLayoutParams();
+        if (lp != null) {
+            lp.leftMargin = savedPrePipLeft;
+            lp.topMargin = savedPrePipTop;
+        }
+        applySizeAndClamp(false);
+        updateButtons();
+        if (fullSizeRestored) {
+            hasSavedPrePipLayout = false;
+        }
     }
 
     private void reloadStream() {
@@ -501,6 +599,7 @@ final class MultiStreamPipOverlay {
                 new ScaleGestureDetector.SimpleOnScaleGestureListener() {
                     @Override
                     public boolean onScaleBegin(ScaleGestureDetector detector) {
+                        hasSavedPrePipLayout = false;
                         pinched[0] = true;
                         dragging[0] = false;
                         return true;
@@ -576,6 +675,7 @@ final class MultiStreamPipOverlay {
                     float dx = event.getRawX() - downRaw[0];
                     float dy = event.getRawY() - downRaw[1];
                     if (!dragging[0] && (Math.abs(dx) > touchSlop || Math.abs(dy) > touchSlop)) {
+                        hasSavedPrePipLayout = false;
                         dragging[0] = true;
                     }
                     if (dragging[0]) {
