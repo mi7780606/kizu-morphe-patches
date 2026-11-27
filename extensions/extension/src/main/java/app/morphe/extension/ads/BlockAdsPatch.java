@@ -9,6 +9,7 @@ import java.lang.ref.WeakReference;
 import java.lang.reflect.Method;
 
 import app.morphe.extension.Utils;
+import app.morphe.extension.player.NetworkQualityManager;
 import app.morphe.extension.settings.Settings;
 
 /**
@@ -234,6 +235,7 @@ public final class BlockAdsPatch {
     public static void preload(Object mediaPlayer, Uri uri, Object listener) {
         if (mediaPlayer != null) {
             lastIvsMediaPlayer = new WeakReference<>(mediaPlayer);
+            try { NetworkQualityManager.onNativePlayerLoad(mediaPlayer); } catch (Throwable ignored) {}
         }
         StreamProxy.preload(mediaPlayer, uri, listener);
     }

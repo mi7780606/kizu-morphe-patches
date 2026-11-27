@@ -140,6 +140,15 @@ public final class Settings {
             new BooleanSetting("hide_landscape_chat_input", true);
 
     // Player.
+    /** Automatically switch stream quality between Wi-Fi and mobile data. */
+    public static final BooleanSetting AUTO_NETWORK_QUALITY =
+            new BooleanSetting("auto_network_quality", false);
+    /** Preferred stream quality on Wi-Fi: auto, source, 1080p, 720p, 480p, 360p, 160p, audio_only. */
+    public static final StringSetting WIFI_QUALITY =
+            new StringSetting("wifi_quality", "source");
+    /** Preferred stream quality on mobile data: auto, source, 1080p, 720p, 480p, 360p, 160p, audio_only. */
+    public static final StringSetting MOBILE_QUALITY =
+            new StringSetting("mobile_quality", "480p");
     public static final BooleanSetting SHOW_REFRESH_BUTTON =
             new BooleanSetting("show_refresh_button", true);
     /** Controls the custom live Video Stats button beside Reload Stream. */

@@ -134,7 +134,7 @@ public class UyuSettingsFragment extends PreferenceFragment {
         addSectionLink(screen, SECTION_EMOTES, "7TV / BTTV / FFZ などの外部スタンプとアニメーション表示");
         addSectionLink(screen, SECTION_CHAT, "削除済みメッセージ、時刻表示、メンション強調、横画面チャットの調整");
         addSectionLink(screen, SECTION_HOME, "ホーム画面の不要な項目や＋ボタン、ナビゲーションの表示設定");
-        addSectionLink(screen, SECTION_PLAYER, "リロード・統計ボタン、スワイプ操作（明るさ/音量）、オーバーレイボタン設定");
+        addSectionLink(screen, SECTION_PLAYER, "回線別の自動画質切替、リロード・統計ボタン、スワイプ操作、オーバーレイ設定");
         addSectionLink(screen, SECTION_PRIVACY, "解析ツールやクラッシュレポート送信の無効化");
         addSectionLink(screen, SECTION_WATCHLOG, "見たチャンネルと視聴時間をサーバーに記録");
         addBackupLinks(screen);
@@ -391,6 +391,7 @@ public class UyuSettingsFragment extends PreferenceFragment {
     }
 
     private void addPlayerSettings(PreferenceScreen screen) {
+        addNetworkQualitySettings(screen);
         addSwitch(screen, Settings.SHOW_VIDEO_STATS_BUTTON, "再生統計ボタンを表示",
                 "リロードボタンのすぐ左に Twitch 標準のライブ再生統計パネルを開くボタンを追加します。");
         addSwitch(screen, Settings.SHOW_REFRESH_BUTTON, "配信リロードボタンを表示",
@@ -409,6 +410,50 @@ public class UyuSettingsFragment extends PreferenceFragment {
                 "プレイヤー上の配信共有ボタンを隠します。");
         addSwitch(screen, Settings.HIDE_CAST_BUTTON, "キャストボタンを非表示",
                 "プレイヤー上の Chromecast 接続ボタンを隠します。");
+    }
+
+    private void addNetworkQualitySettings(PreferenceScreen screen) {
+        SwitchPreference toggle = new SwitchPreference(SettingsUi.preferenceContext(screen.getContext()));
+        toggle.setKey(Settings.AUTO_NETWORK_QUALITY.key);
+        toggle.setDefaultValue(Settings.AUTO_NETWORK_QUALITY.defaultValue);
+        toggle.setTitle("回線別の自動画質切替");
+        toggle.setSummary("Wi-Fi 接続時とモバイル回線時で、通常再生・マルチ視聴の画質を自動検知して切り替えます。");
+        toggle.setOnPreferenceChangeListener((changed, newValue) -> {
+            Settings.AUTO_NETWORK_QUALITY.save(Boolean.TRUE.equals(newValue));
+            app.morphe.extension.player.NetworkQualityManager.onSettingsChanged();
+            return true;
+        });
+        screen.addPreference(toggle);
+
+        addQualityPresetPreference(screen, Settings.WIFI_QUALITY, "Wi-Fi 接続時の画質");
+        addQualityPresetPreference(screen, Settings.MOBILE_QUALITY, "モバイル回線時の画質");
+    }
+
+    private void addQualityPresetPreference(PreferenceScreen screen, StringSetting setting, String title) {
+        Preference pref = new Preference(SettingsUi.preferenceContext(screen.getContext()));
+        pref.setTitle(title);
+        pref.setSummary(app.morphe.extension.player.NetworkQualityManager.labelForPreset(setting.get()));
+        pref.setOnPreferenceClickListener(clicked -> {
+            Activity activity = getActivity();
+            if (activity == null) return true;
+            String[] values = app.morphe.extension.player.NetworkQualityManager.PRESET_VALUES;
+            String[] labels = app.morphe.extension.player.NetworkQualityManager.PRESET_LABELS;
+            int selected = app.morphe.extension.player.NetworkQualityManager.indexForPreset(setting.get());
+            SettingsUi.dialog(activity)
+                    .setTitle(title)
+                    .setSingleChoiceItems(labels, selected, (dialog, which) -> {
+                        if (which >= 0 && which < values.length) {
+                            setting.save(values[which]);
+                            pref.setSummary(labels[which]);
+                            app.morphe.extension.player.NetworkQualityManager.onSettingsChanged();
+                        }
+                        dialog.dismiss();
+                    })
+                    .setNegativeButton(android.R.string.cancel, null)
+                    .show();
+            return true;
+        });
+        screen.addPreference(pref);
     }
 
     private void addHomeSettings(PreferenceScreen screen) {

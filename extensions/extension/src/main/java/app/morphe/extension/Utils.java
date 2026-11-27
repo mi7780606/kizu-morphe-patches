@@ -18,6 +18,7 @@ import app.morphe.extension.appearance.KizuUiTweaks;
 import app.morphe.extension.channelpoints.ChannelPoints;
 import app.morphe.extension.channelpoints.PredictionBetter;
 import app.morphe.extension.multistream.MultiStreamManager;
+import app.morphe.extension.player.NetworkQualityManager;
 import app.morphe.extension.settings.SettingsUi;
 import app.morphe.extension.settings.TwitchUi;
 import app.morphe.extension.twitch.emotes.EmoteSupport;
@@ -76,6 +77,7 @@ public final class Utils {
         EmoteSupport.init(appContext);
         ChannelPoints.start(appContext);
         try { PredictionBetter.start(appContext); } catch (Throwable ignored) {}
+        try { NetworkQualityManager.init(appContext); } catch (Throwable ignored) {}
         try {
             Context applicationContext = appContext == null ? null : appContext.getApplicationContext();
             if (applicationContext instanceof Application application) {

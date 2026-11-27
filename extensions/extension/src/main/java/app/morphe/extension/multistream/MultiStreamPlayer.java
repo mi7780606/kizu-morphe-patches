@@ -20,6 +20,8 @@ import java.util.Collections;
 import java.util.List;
 import java.util.Locale;
 
+import app.morphe.extension.player.NetworkQualityManager;
+
 /**
  * Lightweight video player for multi-stream slots backed by Twitch 31.3.1's bundled unobfuscated
  * Amazon IVS Player ({@code com.amazonaws.ivs.player.Player}) via reflection, falling back to
@@ -92,10 +94,13 @@ final class MultiStreamPlayer implements TextureView.SurfaceTextureListener {
     private List<QualityOption> cachedQualities = Collections.emptyList();
 
     private final Runnable pollRunnable = this::pollIvsState;
+    private final NetworkQualityManager.Listener networkQualityListener =
+            (type, preset) -> onNetworkQualityChanged(preset);
 
     MultiStreamPlayer(Context context, Listener listener) {
         this.context = context.getApplicationContext();
         this.listener = listener;
+        NetworkQualityManager.addListener(networkQualityListener);
     }
 
     void attachTextureView(TextureView tv) {
@@ -228,6 +233,7 @@ final class MultiStreamPlayer implements TextureView.SurfaceTextureListener {
 
     void release() {
         released = true;
+        NetworkQualityManager.removeListener(networkQualityListener);
         main.removeCallbacks(pollRunnable);
         releaseInternalPlayers();
         if (surface != null) {
@@ -451,13 +457,39 @@ final class MultiStreamPlayer implements TextureView.SurfaceTextureListener {
         } catch (Throwable ignored) {}
     }
 
+    private void onNetworkQualityChanged(String preset) {
+        if (released || ivsPlayer == null) return;
+        manualQualityChosen = false;
+        autoCapApplied = false;
+        refreshQualities();
+        if (cachedQualities.isEmpty()) return;
+        String applied = NetworkQualityManager.applyQualityToIvsPlayer(ivsPlayer, preset, targetMaxHeight);
+        if (applied != null) {
+            autoCapApplied = true;
+            lastQualityLabel = applied;
+            notifyQuality(applied);
+        }
+    }
+
     private void applyAutoQualityCapIfNeeded() {
-        if (autoCapApplied || manualQualityChosen || targetMaxHeight <= 0 || cachedQualities.isEmpty()) return;
+        if (autoCapApplied || manualQualityChosen || cachedQualities.isEmpty()) return;
+        if (!NetworkQualityManager.isEnabled() && targetMaxHeight <= 0) return;
         applyAutoQualityCap();
     }
 
     private void applyAutoQualityCap() {
-        if (ivsPlayer == null || ivsSetQuality == null || cachedQualities.isEmpty() || targetMaxHeight <= 0) return;
+        if (ivsPlayer == null || ivsSetQuality == null || cachedQualities.isEmpty()) return;
+        if (NetworkQualityManager.isEnabled()) {
+            String preset = NetworkQualityManager.currentPreset();
+            String applied = NetworkQualityManager.applyQualityToIvsPlayer(ivsPlayer, preset, targetMaxHeight);
+            if (applied != null) {
+                autoCapApplied = true;
+                lastQualityLabel = applied;
+                notifyQuality(applied);
+                return;
+            }
+        }
+        if (targetMaxHeight <= 0) return;
         QualityOption best = null;
         for (QualityOption opt : cachedQualities) {
             if (opt.height > 0 && opt.height <= targetMaxHeight) {
