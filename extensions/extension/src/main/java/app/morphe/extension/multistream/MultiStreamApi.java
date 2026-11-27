@@ -13,9 +13,11 @@ import java.net.HttpURLConnection;
 import java.net.URL;
 import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Locale;
 import java.util.Random;
+import java.util.Set;
 
 import app.morphe.extension.KizuRuntime;
 import app.morphe.extension.ads.StreamProxy;
@@ -59,6 +61,40 @@ final class MultiStreamApi {
             + " }"
             + " }";
 
+    private static final String SEARCH_LIVE_QUERY =
+            "query KizuSearchLive($query: String!, $platform: String!) {"
+            + " searchFor(userQuery: $query, platform: $platform) {"
+            + "  channels { edges { item {"
+            + "   __typename"
+            + "   ... on User {"
+            + "    login displayName profileImageURL(width: 70)"
+            + "    stream {"
+            + "     title viewersCount previewImageURL(width: 320, height: 180)"
+            + "     game { displayName }"
+            + "    }"
+            + "   }"
+            + "  } } }"
+            + "  games { edges { item {"
+            + "   __typename"
+            + "   ... on Game {"
+            + "    displayName"
+            + "    streams(first: 10) { edges { node {"
+            + "     title viewersCount previewImageURL(width: 320, height: 180)"
+            + "     broadcaster { login displayName profileImageURL(width: 70) }"
+            + "     game { displayName }"
+            + "    } } }"
+            + "   }"
+            + "  } } }"
+            + "  relatedLiveChannels { items {"
+            + "   login displayName profileImageURL(width: 70)"
+            + "   stream {"
+            + "    title viewersCount previewImageURL(width: 320, height: 180)"
+            + "    game { displayName }"
+            + "   }"
+            + "  } }"
+            + " }"
+            + " }";
+
     private static volatile String cachedTokenForLogin;
     private static volatile String cachedUserLogin;
 
@@ -72,9 +108,15 @@ final class MultiStreamApi {
         final int viewers;
         final String avatarUrl;
         final String previewUrl;
+        final boolean live;
 
         ChannelInfo(String login, String displayName, String title, String game,
                     int viewers, String avatarUrl, String previewUrl) {
+            this(login, displayName, title, game, viewers, avatarUrl, previewUrl, true);
+        }
+
+        ChannelInfo(String login, String displayName, String title, String game,
+                    int viewers, String avatarUrl, String previewUrl, boolean live) {
             this.login = login;
             this.displayName = displayName;
             this.title = title;
@@ -82,6 +124,7 @@ final class MultiStreamApi {
             this.viewers = viewers;
             this.avatarUrl = avatarUrl;
             this.previewUrl = previewUrl;
+            this.live = live;
         }
     }
 
@@ -256,6 +299,132 @@ final class MultiStreamApi {
         return out;
     }
 
+    /**
+     * Searches Twitch live channels, matching game/category streams, and related live channels
+     * using Twitch's native {@code searchFor} GraphQL query (supports Japanese & English keywords).
+     */
+    static List<ChannelInfo> searchLiveChannels(Context context, String rawQuery) {
+        List<ChannelInfo> out = new ArrayList<>();
+        if (rawQuery == null) return out;
+        String query = rawQuery.trim();
+        if (query.isEmpty()) return out;
+
+        try {
+            String authToken = context == null ? "" : KizuRuntime.readAuthToken(context);
+            JSONObject vars = new JSONObject()
+                    .put("query", query)
+                    .put("platform", "android");
+            JSONObject req = new JSONObject()
+                    .put("operationName", "KizuSearchLive")
+                    .put("variables", vars)
+                    .put("query", SEARCH_LIVE_QUERY);
+
+            JSONObject res = postGql(authToken, CLIENT_ID, req.toString());
+            if (res == null && !authToken.isEmpty()) {
+                res = postGql("", CLIENT_ID, req.toString());
+            }
+            if (res == null) return out;
+
+            JSONObject data = res.optJSONObject("data");
+            JSONObject searchFor = data == null ? null : data.optJSONObject("searchFor");
+            if (searchFor == null) return out;
+
+            Set<String> seen = new LinkedHashSet<>();
+            List<ChannelInfo> offlineFallback = new ArrayList<>();
+
+            // 1. Direct live channel matches (highest priority)
+            JSONObject channelsObj = searchFor.optJSONObject("channels");
+            JSONArray channelEdges = channelsObj == null ? null : channelsObj.optJSONArray("edges");
+            if (channelEdges != null) {
+                for (int i = 0; i < channelEdges.length(); i++) {
+                    JSONObject edge = channelEdges.optJSONObject(i);
+                    JSONObject item = edge == null ? null : edge.optJSONObject("item");
+                    if (item == null) continue;
+                    String login = item.optString("login", "").trim().toLowerCase(Locale.ROOT);
+                    if (login.isEmpty() || !seen.add(login)) continue;
+                    String displayName = item.optString("displayName", login);
+                    String avatar = item.optString("profileImageURL", "");
+                    JSONObject stream = item.optJSONObject("stream");
+                    if (stream != null) {
+                        out.add(buildChannelFromUserStream(login, displayName, avatar, stream));
+                    } else if (offlineFallback.size() < 3) {
+                        offlineFallback.add(new ChannelInfo(login, displayName, "", "", 0, avatar, "", false));
+                    }
+                }
+            }
+
+            // 2. Top matched game / category live streams (e.g. "VALORANT", "スト6", "雑談")
+            JSONObject gamesObj = searchFor.optJSONObject("games");
+            JSONArray gameEdges = gamesObj == null ? null : gamesObj.optJSONArray("edges");
+            if (gameEdges != null) {
+                int maxGames = Math.min(2, gameEdges.length());
+                for (int g = 0; g < maxGames; g++) {
+                    JSONObject gEdge = gameEdges.optJSONObject(g);
+                    JSONObject gItem = gEdge == null ? null : gEdge.optJSONObject("item");
+                    if (gItem == null) continue;
+                    String fallbackGame = gItem.optString("displayName", "");
+                    JSONObject streamsObj = gItem.optJSONObject("streams");
+                    JSONArray streamEdges = streamsObj == null ? null : streamsObj.optJSONArray("edges");
+                    if (streamEdges == null) continue;
+                    int limit = g == 0 ? 10 : 4;
+                    for (int i = 0; i < streamEdges.length() && i < limit; i++) {
+                        JSONObject sEdge = streamEdges.optJSONObject(i);
+                        JSONObject node = sEdge == null ? null : sEdge.optJSONObject("node");
+                        if (node == null) continue;
+                        JSONObject broadcaster = node.optJSONObject("broadcaster");
+                        if (broadcaster == null) continue;
+                        String login = broadcaster.optString("login", "").trim().toLowerCase(Locale.ROOT);
+                        if (login.isEmpty() || !seen.add(login)) continue;
+                        String displayName = broadcaster.optString("displayName", login);
+                        String avatar = broadcaster.optString("profileImageURL", "");
+                        String title = node.optString("title", "");
+                        int viewers = node.optInt("viewersCount", 0);
+                        String preview = node.optString("previewImageURL", "");
+                        JSONObject gameObj = node.optJSONObject("game");
+                        String game = gameObj != null ? gameObj.optString("displayName", fallbackGame) : fallbackGame;
+                        out.add(new ChannelInfo(login, displayName, title, game, viewers, avatar, preview, true));
+                    }
+                }
+            }
+
+            // 3. Related live channels (great when the searched streamer is offline)
+            JSONObject relObj = searchFor.optJSONObject("relatedLiveChannels");
+            JSONArray relItems = relObj == null ? null : relObj.optJSONArray("items");
+            if (relItems != null) {
+                for (int i = 0; i < relItems.length(); i++) {
+                    JSONObject item = relItems.optJSONObject(i);
+                    if (item == null) continue;
+                    String login = item.optString("login", "").trim().toLowerCase(Locale.ROOT);
+                    if (login.isEmpty() || !seen.add(login)) continue;
+                    JSONObject stream = item.optJSONObject("stream");
+                    if (stream == null) continue;
+                    String displayName = item.optString("displayName", login);
+                    String avatar = item.optString("profileImageURL", "");
+                    out.add(buildChannelFromUserStream(login, displayName, avatar, stream));
+                }
+            }
+
+            // 4. Append top offline channel matches at the bottom when few live matches exist
+            //    so users searching an offline streamer see their status immediately.
+            if (out.size() < 6 && !offlineFallback.isEmpty()) {
+                out.addAll(offlineFallback);
+            }
+        } catch (Throwable t) {
+            Log.e(TAG, "searchLiveChannels failed for " + query, t);
+        }
+        return out;
+    }
+
+    private static ChannelInfo buildChannelFromUserStream(
+            String login, String displayName, String avatar, JSONObject stream) {
+        String title = stream.optString("title", "");
+        int viewers = stream.optInt("viewersCount", 0);
+        String preview = stream.optString("previewImageURL", "");
+        JSONObject gameObj = stream.optJSONObject("game");
+        String game = gameObj == null ? "" : gameObj.optString("displayName", "");
+        return new ChannelInfo(login, displayName, title, game, viewers, avatar, preview, true);
+    }
+
     static String resolveCurrentUserLogin(Context context) {
         String authToken = KizuRuntime.readAuthToken(context);
         if (authToken.isEmpty()) return "";
@@ -296,7 +465,8 @@ final class MultiStreamApi {
             con.setReadTimeout(READ_TIMEOUT_MS);
             con.setDoOutput(true);
             con.setRequestProperty("Accept", "application/json");
-            con.setRequestProperty("Content-Type", "application/json");
+            con.setRequestProperty("Content-Type", "application/json; charset=utf-8");
+            con.setRequestProperty("Accept-Language", Locale.getDefault().toLanguageTag());
             con.setRequestProperty("Client-ID", clientId != null && !clientId.isEmpty() ? clientId : CLIENT_ID);
             if (authToken != null && !authToken.isEmpty()) {
                 con.setRequestProperty("Authorization", "OAuth " + authToken);
