@@ -28,6 +28,9 @@ import java.util.Map;
 import java.util.WeakHashMap;
 
 import app.morphe.extension.Utils;
+import app.morphe.extension.multistream.AdBypassOverlayPlayer;
+import app.morphe.extension.multistream.MultiStreamManager;
+import app.morphe.extension.settings.Settings;
 import app.morphe.extension.settings.TwitchUi;
 
 /**
@@ -102,12 +105,25 @@ final class AdBlockOverlay {
             if (view == null) Utils.logInfo("Ad blocked, but the player view was not found. The player is muted.");
             return;
         }
-        if (view != null && view.getParent() == container) return;
-        removeView();
+        if (view == null || view.getParent() != container) {
+            removeView();
+            view = createView(container.getContext());
+            container.addView(view, Math.min(1, container.getChildCount()), new FrameLayout.LayoutParams(
+                    ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT));
+        }
+        maybeStartBypassOverlay(container);
+    }
 
-        view = createView(container.getContext());
-        container.addView(view, Math.min(1, container.getChildCount()), new FrameLayout.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT));
+    private void maybeStartBypassOverlay(ViewGroup container) {
+        try {
+            if (!Settings.ADS_BYPASS_OVERLAY_PLAYER.get()) return;
+            if (MultiStreamManager.isMultiModeActive()) return;
+            Object current = player.get();
+            if (current == null) return;
+            String login = BlockAdsPatch.getCurrentLiveChannelLogin();
+            if (login == null || login.isEmpty()) return;
+            AdBypassOverlayPlayer.start(container, view, current, login);
+        } catch (Throwable ignored) {}
     }
 
     private View createView(Context context) {
@@ -119,6 +135,7 @@ final class AdBlockOverlay {
             @Override public void onViewAttachedToWindow(View v) {}
             @Override public void onViewDetachedFromWindow(View v) {
                 mainHandler.removeCallbacks(tick);
+                try { AdBypassOverlayPlayer.stop(player.get()); } catch (Throwable ignored) {}
             }
         });
 
@@ -207,6 +224,7 @@ final class AdBlockOverlay {
     private void finish() {
         mainHandler.removeCallbacks(tick);
         Object current = player.get();
+        try { AdBypassOverlayPlayer.stop(current); } catch (Throwable ignored) {}
         if (current != null) PlayerEvents.setMuted(current, false);
         removeView();
         Utils.logInfo("Ad break ended");

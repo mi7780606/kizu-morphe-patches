@@ -260,6 +260,8 @@ public class UyuSettingsFragment extends PreferenceFragment {
     private void addAdsSettings(PreferenceScreen screen) {
         addSwitch(screen, Settings.BLOCK_ADS, "広告ブロック",
                 "ライブ・VOD・画面内の各種広告をブロックします。配信映像自体に埋め込まれる広告中は黒画面・ミュートで待機します。");
+        addSwitch(screen, Settings.ADS_BYPASS_OVERLAY_PLAYER, "広告中に別プレイヤーを重ねて視聴",
+                "通常再生（非マルチモード）で映像内広告が始まった際、広告回避プレイヤーを自動で重ねて本編を再生し、広告終了後に自動で閉じます。回避できない広告は黒画面・ミュートで待機します。");
         addSwitch(screen, Settings.ADS_EMBED_PLAYER_TYPE, "埋め込み（embed）プレイヤーとして取得",
                 "ミッドロール広告を減らす目的で配信を embed 扱いで取得します。サブスクや Twitch Turbo の広告免除が外れることがあるため、通常はオフを推奨します。");
 

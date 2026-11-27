@@ -38,6 +38,12 @@ public final class MultiStreamManager {
 
     private MultiStreamManager() {}
 
+    /** Returns true while Mode A Sub-PiP or Mode B Multi-View is currently active. */
+    public static boolean isMultiModeActive() {
+        return (activePip != null && activePip.isShowing())
+                || (activeDialog != null && activeDialog.isShowing());
+    }
+
     /** Opens the hybrid mode launcher sheet from the player top-right multi-view button. */
     public static void openLauncherSheet(Context context) {
         Activity activity = resolveActivity(context);
@@ -146,6 +152,7 @@ public final class MultiStreamManager {
     static void startPip(Activity activity, String login, String displayName) {
         if (activity == null || activity.isFinishing() || activity.isDestroyed()) return;
         try {
+            AdBypassOverlayPlayer.stopAll();
             if (activeDialog != null && activeDialog.isShowing()) {
                 activeDialog.dismiss();
                 activeDialog = null;
@@ -193,6 +200,7 @@ public final class MultiStreamManager {
 
     private static void openMultiView(Activity activity, List<String> initialLogins) {
         try {
+            AdBypassOverlayPlayer.stopAll();
             if (activeDialog != null) {
                 activeDialog.dismiss();
                 activeDialog = null;
@@ -261,14 +269,17 @@ public final class MultiStreamManager {
     public static void onActivityPaused(Activity activity) {
         if (activePip != null && activePip.belongsTo(activity)) activePip.pause();
         if (activeDialog != null && activeDialog.belongsTo(activity)) activeDialog.pause();
+        AdBypassOverlayPlayer.onActivityPaused(activity);
     }
 
     public static void onActivityResumed(Activity activity) {
         if (activePip != null && activePip.belongsTo(activity)) activePip.resume();
         if (activeDialog != null && activeDialog.belongsTo(activity)) activeDialog.resume();
+        AdBypassOverlayPlayer.onActivityResumed(activity);
     }
 
     public static void onActivityDestroyed(Activity activity) {
+        AdBypassOverlayPlayer.onActivityDestroyed(activity);
         if (activeDialog != null && activeDialog.belongsTo(activity)) {
             activeDialog.dismiss();
             activeDialog = null;

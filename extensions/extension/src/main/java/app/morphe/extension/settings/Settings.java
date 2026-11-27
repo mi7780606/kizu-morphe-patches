@@ -83,6 +83,9 @@ public final class Settings {
     // Ads.
     public static final BooleanSetting BLOCK_ADS =
             new BooleanSetting("block_ads", true);
+    /** Overlay an ad-free backup player over normal (non-multi-mode) playback during stitched ads. */
+    public static final BooleanSetting ADS_BYPASS_OVERLAY_PLAYER =
+            new BooleanSetting("ads_bypass_overlay_player", true);
     /** Request access tokens as the "embed" player type. Off by default so subscriber/Turbo ad-free tokens stay intact. */
     public static final BooleanSetting ADS_EMBED_PLAYER_TYPE =
             new BooleanSetting("ads_embed_player_type", false);

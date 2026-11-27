@@ -138,6 +138,38 @@ final class MultiStreamHlsProxy {
         return new SessionHandle(sid, localUri);
     }
 
+    /**
+     * Probes alternate {@code playerType} backup streams ({@code embed}, {@code popout},
+     * {@code frontpage}, {@code autoplay}, {@code site}) and registers a local HLS proxy session
+     * on the first verified ad-free backup stream. Used by {@link AdBypassOverlayPlayer} during
+     * normal playback stitched ads so the overlay opens directly on clean content.
+     *
+     * @return Session handle if a clean backup stream was found, or {@code null} if all backups
+     *         currently contain stitched ads or could not be fetched.
+     */
+    SessionHandle registerBackupFirstSession(Context context, String rawLogin) {
+        if (rawLogin == null) return null;
+        String login = rawLogin.trim().toLowerCase(Locale.ROOT);
+        if (login.isEmpty()) return null;
+        if (!ensureStarted()) return null;
+
+        for (String candidate : BACKUP_PLAYER_TYPES) {
+            Uri backupMasterUri = MultiStreamApi.fetchBackupUsherUri(login, candidate);
+            if (backupMasterUri == null) continue;
+            HttpResult masterRes = httpGetText(backupMasterUri.toString());
+            if (masterRes.body == null) continue;
+            List<VariantEntry> variants = parseMasterVariants(masterRes.body, backupMasterUri.toString());
+            VariantEntry probeVariant = pickBestVariant(variants, 720, null);
+            if (probeVariant == null || probeVariant.upstreamUrl == null) continue;
+            HttpResult mediaRes = httpGetText(probeVariant.upstreamUrl);
+            if (mediaRes.body == null || detectStitchedAd(mediaRes.body).hasAd) continue;
+
+            Log.i(TAG, "Ad-bypass overlay found clean backup for " + login + " via playerType=" + candidate);
+            return registerSession(context, login, candidate, backupMasterUri);
+        }
+        return null;
+    }
+
     void setAdStateListener(String sessionId, AdStateListener listener) {
         if (sessionId == null) return;
         ProxySession s = sessions.get(sessionId);

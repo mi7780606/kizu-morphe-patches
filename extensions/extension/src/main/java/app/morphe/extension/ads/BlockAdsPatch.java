@@ -7,8 +7,11 @@ import android.view.View;
 
 import java.lang.ref.WeakReference;
 import java.lang.reflect.Method;
+import java.util.Locale;
 
 import app.morphe.extension.Utils;
+import app.morphe.extension.channelpoints.ChannelPoints;
+import app.morphe.extension.multistream.AdBypassOverlayPlayer;
 import app.morphe.extension.player.NetworkQualityManager;
 import app.morphe.extension.settings.Settings;
 
@@ -33,6 +36,8 @@ public final class BlockAdsPatch {
     private static volatile WeakReference<Object> lastEventPlayer = new WeakReference<>(null);
     private static volatile WeakReference<Object> lastIvsMediaPlayer = new WeakReference<>(null);
     private static volatile boolean nativePlaybackSuppressed;
+    private static volatile String lastLiveChannelLogin;
+    private static volatile boolean lastStreamIsLive = true;
 
     private BlockAdsPatch() {
     }
@@ -46,6 +51,7 @@ public final class BlockAdsPatch {
         Object eventPlayer = lastEventPlayer.get();
         Object ivsPlayer = lastIvsMediaPlayer.get();
         if (suppressed) {
+            try { AdBypassOverlayPlayer.stopAll(); } catch (Throwable ignored) {}
             if (eventPlayer != null) {
                 try { PlayerEvents.setMuted(eventPlayer, true); } catch (Throwable ignored) {}
                 invokeNoArg(eventPlayer, "pause");
@@ -221,6 +227,7 @@ public final class BlockAdsPatch {
      */
     public static Uri overrideStreamUri(Uri uri) {
         try {
+            recordStreamUri(uri, false);
             return uri != null && isEnabled() ? StreamProxy.override(uri) : uri;
         } catch (Exception ex) {
             Utils.logError("Block ads: failed to use the proxy", ex);
@@ -233,10 +240,54 @@ public final class BlockAdsPatch {
      * that loads a live stream's playlist.
      */
     public static void preload(Object mediaPlayer, Uri uri, Object listener) {
+        recordStreamUri(uri, true);
         if (mediaPlayer != null) {
             lastIvsMediaPlayer = new WeakReference<>(mediaPlayer);
             try { NetworkQualityManager.onNativePlayerLoad(mediaPlayer); } catch (Throwable ignored) {}
         }
         StreamProxy.preload(mediaPlayer, uri, listener);
+    }
+
+    /** Returns the currently playing live channel login, or {@code null} for VODs / unknown streams. */
+    static String getCurrentLiveChannelLogin() {
+        if (!lastStreamIsLive) return null;
+        String recorded = lastLiveChannelLogin;
+        if (recorded != null && !recorded.isEmpty()) return recorded;
+        return ChannelPoints.currentChannelLogin();
+    }
+
+    private static void recordStreamUri(Uri uri, boolean fromPreload) {
+        if (uri == null) return;
+        try {
+            String path = uri.getPath();
+            if (path == null) return;
+            String lowerPath = path.toLowerCase(Locale.ROOT);
+            if (lowerPath.contains("/vod/")) {
+                lastStreamIsLive = false;
+                lastLiveChannelLogin = null;
+                if (fromPreload) {
+                    try { AdBypassOverlayPlayer.stopAll(); } catch (Throwable ignored) {}
+                }
+                return;
+            }
+            String segment = uri.getLastPathSegment();
+            if (segment == null || segment.isEmpty()) return;
+            String extracted = null;
+            if (lowerPath.contains("/api/channel/hls/") && segment.toLowerCase(Locale.ROOT).endsWith(".m3u8")) {
+                extracted = segment.substring(0, segment.length() - 5).trim().toLowerCase(Locale.ROOT);
+            } else if (lowerPath.contains("/live/")) {
+                String clean = segment.trim().toLowerCase(Locale.ROOT);
+                if (clean.endsWith(".m3u8")) clean = clean.substring(0, clean.length() - 5);
+                extracted = clean;
+            }
+            if (extracted != null && !extracted.isEmpty()) {
+                String prev = lastLiveChannelLogin;
+                lastLiveChannelLogin = extracted;
+                lastStreamIsLive = true;
+                if (fromPreload && prev != null && !prev.equals(extracted)) {
+                    try { AdBypassOverlayPlayer.stopAll(); } catch (Throwable ignored) {}
+                }
+            }
+        } catch (Throwable ignored) {}
     }
 }
